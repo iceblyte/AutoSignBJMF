@@ -1,0 +1,30 @@
+# Linux 服务器常驻签到（systemd）
+#
+# 安装：
+#   sudo cp deploy/signin-loop.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now signin-loop
+#
+# 查看运行状态与日志：
+#   systemctl status signin-loop
+#   journalctl -u signin-loop -f
+
+[Unit]
+Description=BJMF Auto Sign-in Loop
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# 改成你的实际路径；仓库目录名不同也可以
+WorkingDirectory=/opt/AutoSignBJMF
+# 用项目自己的虚拟环境，避免依赖装到系统 Python 上
+ExecStart=/opt/AutoSignBJMF/.venv/bin/python /opt/AutoSignBJMF/signin_loop.py --times 07:30,21:31
+# 不加这个参数，journalctl 里要等缓冲区满才能看到日志
+Environment=PYTHONUNBUFFERED=1
+# 进程异常退出后自动拉起
+Restart=always
+RestartSec=60
+
+[Install]
+WantedBy=multi-user.target

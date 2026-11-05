@@ -1,0 +1,6 @@
+# Web admin dependencies, on top of the CLI requirements.
+-r ../requirements.txt
+
+Flask==3.0.3
+APScheduler==3.10.4
+SQLAlchemy==2.0.29

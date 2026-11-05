@@ -1,0 +1,49 @@
+name: 自动签到
+
+on:
+  schedule:
+    # GitHub 的 schedule 使用 UTC；13:31 UTC = 北京时间 21:31
+    - cron: '31 13 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  signin:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: 安装依赖
+        run: pip install -r requirements.txt
+
+      - name: 从 Secret 恢复 data.json
+        env:
+          DATA_JSON: ${{ secrets.DATA_JSON }}
+        run: |
+          if [ -z "$DATA_JSON" ]; then
+            echo "未配置 DATA_JSON secret，无法继续" >&2
+            exit 1
+          fi
+          printf '%s' "$DATA_JSON" > data.json
+
+      - name: 执行签到（失败后每隔10分钟重试，最多3次）
+        run: |
+          for i in 1 2 3; do
+            echo "=== 第 $i 次尝试 ==="
+            if python BJMF.py; then
+              exit 0
+            fi
+            echo "第 $i 次失败"
+            if [ "$i" -lt 3 ]; then
+              sleep 600
+            fi
+          done
+          exit 1

@@ -1,0 +1,21 @@
+# 构建上下文瘦身：这些内容不该进镜像
+.git
+.gitattributes
+.github
+.idea
+.venv
+venv
+__pycache__
+**/__pycache__
+*.py[cod]
+.pytest_cache
+tests
+doc
+
+# 个人凭证绝不进镜像
+data.json
+.env
+.env.*
+web_signin/config.json
+web_signin/db
+debug_html.txt

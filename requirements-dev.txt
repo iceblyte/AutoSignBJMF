@@ -1,0 +1,4 @@
+# Dev/test dependencies: install everything needed to run both the CLI and the web app.
+-r web_signin/requirements.txt
+
+pytest>=8.0
