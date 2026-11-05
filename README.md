@@ -215,6 +215,14 @@ python BJMF.py
 3. **验证**
    `Actions` → `自动签到` → `Run workflow` 手动触发一次，看日志里是否签到成功。
 
+4. **Cookie 过期后更新 Secret**
+   登录态过期时日志里的用户姓名会显示 `未找到`，签到会直接跳过。重新扫码生成新的 `data.json` 后覆盖 Secret 即可：
+
+   ```bash
+   python auto_add_user.py                                    # 重新扫码，写入 data.json
+   gh secret set DATA_JSON --repo <你的用户名>/<仓库名> < data.json
+   ```
+
 ### 关于定时时间
 
 ```yaml
