@@ -66,10 +66,22 @@ AutoSignBJMF/
 
 ## 更新说明
 
+- 2026.11.06
+  - 修复: `SQLAlchemy==2.0.29` 在 Python 3.13 下导入即崩（`AssertionError: ...directly inherits TypingOnly...`），
+    升级到 `2.0.36`；此前 3.13 用户不仅 Web 端起不来，`pytest` 也会在收集阶段直接报错
+  - 修复: `/api/admin/*` 恢复管理员鉴权（`X-Admin-Token`），此前 `_require_admin` 恒放行，
+    只要端口可达任何人都能删任务；`/manage` 增加 Key 初始化 / 登录遮罩
+  - 修复: 管理端日志时间按北京时间展示（此前用 UTC，比实际早 8 小时）
+  - 修复: `punchs`/`daka` 两个列表页都请求失败时引用未绑定的 `response`，真实网络原因被 `NameError` 掩盖
+  - 修复: `auto_add_user.py` 的 `data.json` 改为脚本同级（此前跟随 CWD），并给打印输出里的 Cookie / 推送 Key 打码
+  - 新增: `tests/test_web_api.py`（29 个用例）覆盖全部 Flask 接口与鉴权分支；`tests/test_auto_add_user.py`
+  - 脱敏: `doc/img0.jpg` 的示例经纬度、`doc/img5.jpg` 的班级 ID 已打码
+  - 忽略: `login_qrcode.png`、`web_signin/debug_qr.html` 加入 `.gitignore`
+
 - 2026.11.05
   - 新增 `signin_loop.py`：本地/服务器常驻定时，不依赖终端保持打开
   - 新增 `deploy/`：Windows 计划任务注册脚本、Linux systemd 单元
-  - 新增 `tests/`：76 个 pytest 用例覆盖签到后端，全程 mock 不发真实请求
+  - 新增 `tests/`：124 个 pytest 用例覆盖签到后端，全程 mock 不发真实请求
   - 新增 GitHub Actions 自动签到（可用，但注意官方延迟说明）
   - 修复: 以 `python web_signin/run.py` 启动时，Web 版定时任务因项目根不在 `sys.path` 上而必然失败
   - 修复: 登录态 Cookie 名随学校变化，改为按 `remember_student_` 前缀提取；提取不到时整串发送，`PHPSESSID` 会话不再直接报错
@@ -77,6 +89,7 @@ AutoSignBJMF/
   - 合并上游 `emocat17/AutoSignBJMF` 的签到检测逻辑重构
   - 统一依赖：`requests` 版本冲突、移除未使用的 `DateTime` 与 `bs4` 占位包
   - 补充 MIT 许可证
+
 
 - 2026.01.10
   - `auto_add_user.py` 优化: 支持通过 `.env` 文件配置公共参数(经纬度、通知Key等)，简化配置流程
@@ -93,6 +106,10 @@ AutoSignBJMF/
 ## 环境准备
 
 需要 **Python 3.10 及以上**（代码使用了 `str | None` 语法）。
+
+> Python 3.13 用户注意：Web 管理端依赖的 SQLAlchemy 必须 **≥ 2.0.32**（2.0.31 起初步支持 3.13，
+> 2.0.32 才完整支持）。仓库已钉 `SQLAlchemy==2.0.36`；若你手工降到 2.0.29，`import app` 会直接抛
+> `AssertionError: ...directly inherits TypingOnly...`，Web 端和调度器测试都跑不起来。
 
 ```bash
 git clone https://github.com/iceblyte/AutoSignBJMF.git
@@ -290,8 +307,10 @@ docker run -d --name bjmf-web -p 9988:9988 --restart unless-stopped bjmf-web
 
 > 注意：容器重建会丢失数据库，请把 `./web_signin/db` 留在宿主机（compose 已挂载）。
 > 安全提示：用户侧接口（`/api/qr`、`/api/tasks`、`/api/user/config`）**不做鉴权**，能访问端口的人即可提交和读取含 Cookie 的任务；
-> 只有 `/api/admin/*` 需要管理员 Key。因此本地运行时默认只监听 `127.0.0.1`，
-> 需要对外服务时再显式设置 `WEB_SIGNIN_HOST=0.0.0.0`（Docker 镜像内已设置），并自行加一层反向代理鉴权或防火墙限制。
+> `/api/admin/*` 需要管理员 Key（首次访问 `/manage` 会引导你设置，数据库只存 SHA-256 哈希）。
+> 因此本地运行时默认只监听 `127.0.0.1`，需要对外服务时再显式设置 `WEB_SIGNIN_HOST=0.0.0.0`
+>（Docker 镜像内已设置），并自行加一层反向代理鉴权或防火墙限制。
+
 
 ### systemd（命令行常驻）
 
@@ -331,6 +350,34 @@ journalctl -u signin-loop -f
    ```
 4. 在浏览器访问 `http://127.0.0.1:9988`。若修改了端口，请替换 `9988`。
 
+### 两个页面
+
+| 路径 | 用途 | 鉴权 |
+| --- | --- | --- |
+| `/` | 扫码添加用户、提交签到任务、查看自己的日志 | 无（靠扫码 token 定位到本人数据） |
+| `/manage` | 查看 / 筛选 / 修改 / 删除所有任务与日志 | 管理员 Key |
+
+首次打开 `/manage` 会提示「初始化管理员 Key」：设一个密码即可，随后自动登录，Key 只保存 SHA-256 哈希到 `web_signin/db/`。
+之后每次打开都用这个 Key 登录，登录得到的 token 只存在当前标签页的 `sessionStorage`，关掉即失效。
+
+也可以不用页面，直接走命令行：
+
+```bash
+# 首次初始化（只能调一次）
+curl -X POST http://127.0.0.1:9988/api/admin/init \
+  -H "Content-Type: application/json" -d '{"key":"你的管理员密码"}'
+
+# 登录拿 token（默认 24 小时有效）
+curl -X POST http://127.0.0.1:9988/api/admin/login \
+  -H "Content-Type: application/json" -d '{"key":"你的管理员密码"}'
+
+# 之后每个 /api/admin/* 请求带上 token
+curl -H "X-Admin-Token: <token>" http://127.0.0.1:9988/api/admin/tasks
+```
+
+> 忘了 Key 就删掉 `web_signin/db/web_signin.db` 里的 `settings` 记录（或整个库文件）重新初始化——
+> 注意这会一并删掉任务与日志，删之前先备份。
+
 ## 开发：跑测试
 
 测试全程使用 mock，**不会发出真实网络请求，也不会产生真实签到**，可以放心反复运行。
@@ -340,15 +387,22 @@ pip install -r requirements-dev.txt
 pytest
 ```
 
-覆盖范围：`attendance` 的六种状态分支与多模块探测、`user_info` 的 Cookie 提取与页面解析、`notification` 的消息格式与超时、`config_manager` 的读写、`BJMF.py` 的 WXKey 选取与班级回填、`signin_loop` 的时间计算、`web_signin` 调度器的时区与日志状态映射。
+覆盖范围：`attendance` 的六种状态分支与多模块探测、`user_info` 的 Cookie 提取与页面解析、`notification` 的消息格式与超时、`config_manager` 的读写、`BJMF.py` 的 WXKey 选取与班级回填与退出码、`signin_loop` 的时间计算、`web_signin` 调度器的时区与日志状态映射、全部 Flask 接口（任务创建/查询/日志、用户配置、管理员初始化/登录/token 鉴权/改删）以及 `auto_add_user` 的配置路径与日志脱敏。
+
+当前共 **124 个用例**，其中 `tests/test_web_api.py` 用 Flask `test_client` + 临时 SQLite 覆盖后端接口，不启动真实调度线程之外的任何外部依赖。
 
 ## 文件与隐私说明
 
 - `data.json`、`.env`、`web_signin/config.json`、`web_signin/db/` 包含个人 Cookie、经纬度、推送 Key，
   **已全部写入 `.gitignore`，不会被提交**，请自行保管。
 - 签到失败时程序会在当前目录生成 `debug_html.txt`（页面快照，含真实姓名与班级 ID），同样已被忽略；
-  **对外分享日志或截图前，请手动打码或删除其中的 Cookie、班级 ID、经纬度等隐私信息。**
-- 本仓库的历史记录已重做为干净快照，不包含任何 Cookie、Key 或他人信息。
+  扫码登录失败时还可能生成 `web_signin/debug_qr.html`，`auto_add_user.py` 会生成 `login_qrcode.png`（含二维码票据），
+  这两个也已加入 `.gitignore`。**对外分享日志或截图前，请手动打码或删除其中的 Cookie、班级 ID、经纬度等隐私信息。**
+- `auto_add_user.py` 在终端回显配置时会对 Cookie 与推送 Key 打码，但**整段 stdout 仍可能含姓名与班级**，
+  贴日志到公开场合前请自行检查。
+- `doc/` 下的示例截图已对真实经纬度（`img0.jpg`）与班级 ID（`img5.jpg`）打码；
+  但 Git 历史中的旧版本仍是打码前的原图，彻底清除需要重写历史（`git filter-repo` + force push）。
+
 
 ## 注意事项
 

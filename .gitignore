@@ -7,10 +7,16 @@
 /web_signin/config.json
 /web_signin/db/
 debug_html.txt
+debug_qr.html
+login_qrcode.png
+*.qrcode.png
 
 ## 配置模板需要保留，不能被上面的通配规则吃掉
 !.env.example
 !config.json.example
+
+## 工作区/助手本地数据，不入库
+.workbuddy/
 
 ## Python 缓存
 __pycache__/
