@@ -1,10 +1,22 @@
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import json
 
 from apscheduler.triggers.cron import CronTrigger
 from sqlalchemy import delete
 
 from .models import Task, TaskLog
+
+# 调度用 Asia/Shanghai，日志正文也要按北京时间展示，否则用户看到的时间比实际早 8 小时。
+# 中国自 1991 年起不再实行夏令时，固定 +08:00 与 Asia/Shanghai 等价，且不依赖 tzdata。
+BEIJING_TZ = timezone(timedelta(hours=8))
+
+
+def _to_beijing(dt: datetime) -> datetime:
+    """把数据库里的 UTC 时间转成北京时间；传进来的 naive datetime 一律按 UTC 解释。"""
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(BEIJING_TZ)
+
 
 
 def _parse_times(times_json: str):
@@ -181,7 +193,7 @@ def run_task_job(task_id: int):
 
         # 生成结构化日志文本，兼顾可读性与调试信息
         log_text_lines = [
-            f"=================={now.strftime('%H:%M:%S')}===================",
+            f"=================={_to_beijing(now).strftime('%H:%M:%S')}===================",
             "=========== 用户和班级信息 ===============",
             f"任务 ID: {task.id}",
             f"用户姓名: {user_name or task.name}",

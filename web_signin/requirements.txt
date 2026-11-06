@@ -3,4 +3,7 @@
 
 Flask==3.0.3
 APScheduler==3.10.4
-SQLAlchemy==2.0.29
+# 2.0.32 起才完整支持 Python 3.13（2.0.29 在 3.13 上导入即抛
+# AssertionError: ...directly inherits TypingOnly...，见 SQLAlchemy ticket 11417）。
+# 这里钉 2.0.36：同时覆盖 3.10 / 3.11 / 3.12 / 3.13，且仍属 2.0 系列。
+SQLAlchemy==2.0.36

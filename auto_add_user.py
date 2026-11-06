@@ -1,3 +1,7 @@
+import copy
+import json
+import os
+
 import requests
 import re
 import qrcode
@@ -7,6 +11,36 @@ from PIL import Image
 
 # 导入自定义模块
 from utils.user_info import get_user_and_class_info
+
+
+def data_path() -> str:
+    """data.json 固定放在脚本所在目录。
+
+    以前用相对路径 "data.json"，从别的目录启动就会读写到别处；
+    BJMF.py 用的是脚本目录，这里保持一致。
+    """
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "data.json")
+
+
+def mask_cookie(cookie: str) -> str:
+    """日志里只保留 Cookie 名（用来判断是哪个登录态），值全部打码。"""
+    if not cookie:
+        return ""
+    name = cookie.split("=", 1)[0].strip()
+    return f"{name}=****"
+
+
+def dump_config(config: dict) -> str:
+    """把配置转成可安全打印的文本：Cookie 与推送 Key 一律替换为 ****。"""
+    safe = copy.deepcopy(config)
+    for student in safe.get("students", []):
+        if "cookie" in student:
+            student["cookie"] = mask_cookie(student.get("cookie") or "")
+        for key in ("QmsgKEY", "WXKey"):
+            if student.get(key):
+                student[key] = "****"
+    return json.dumps(safe, ensure_ascii=False, indent=2)
+
 
 
 class QRCodeLogin:
@@ -274,8 +308,8 @@ def main():
         env_config = load_env_config()
         use_common = env_config["ENABLE_COMMON_CONFIG"]
         
-        # 定义data.json文件路径
-        data_file = "data.json"
+        # 定义data.json文件路径（固定在脚本目录，与 BJMF.py 一致）
+        data_file = data_path()
         
         # 读取现有的data.json文件
         existing_data = {
@@ -348,12 +382,12 @@ def main():
         
         print("data.json更新完成")
         
-        # 打印更新后的data.json内容
+        # 打印更新后的data.json内容（Cookie / 推送 Key 已打码，避免日志泄露凭证）
         print("\n" + "=" * 50)
-        print("更新后的data.json内容：")
+        print("更新后的data.json内容（凭证已打码）：")
         print("=" * 50)
         with open(data_file, "r", encoding="utf-8") as f:
-            print(json.dumps(json.load(f), ensure_ascii=False, indent=2))
+            print(dump_config(json.load(f)))
     else:
         print("\n登录失败，无法获取用户信息")
 

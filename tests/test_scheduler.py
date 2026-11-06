@@ -205,3 +205,43 @@ def test_cleanup_old_logs_removes_only_stale(temp_db):
     with SessionLocal() as db:
         web_scheduler.cleanup_old_logs(db)
         assert [log.message for log in db.query(TaskLog).all()] == ["新"]
+
+
+# --- 日志时区：调度按 Asia/Shanghai，日志正文也必须按北京时间展示，否则差 8 小时 ---
+
+
+def test_to_beijing_shifts_utc_by_eight_hours():
+    assert web_scheduler._to_beijing(datetime(2026, 1, 1, 13, 31, 5)).strftime("%H:%M:%S") == "21:31:05"
+
+
+def test_to_beijing_handles_new_year_rollover():
+    assert web_scheduler._to_beijing(datetime(2026, 12, 31, 17, 0, 0)).strftime("%Y-%m-%d %H:%M") == "2027-01-01 01:00"
+
+
+def test_log_message_uses_beijing_time(monkeypatch, temp_db):
+    """数据库里 run_at 存 UTC，但日志正文里给人看的时间必须是北京时间。"""
+    from sqlalchemy.orm import sessionmaker
+
+    class FrozenDatetime(datetime):
+        @classmethod
+        def utcnow(cls):
+            return cls(2026, 1, 1, 13, 31, 5)
+
+    monkeypatch.setattr(web_scheduler, "datetime", FrozenDatetime)
+
+    SessionLocal = sessionmaker(bind=web_db.get_engine())
+    with SessionLocal() as db:
+        task = _make_task(times=json.dumps(["21:31:00"]))
+        db.add(task)
+        db.commit()
+        task_id = task.id
+
+    monkeypatch.setattr("utils.attendance.Task", lambda student: (student["name"], "success"))
+
+    web_scheduler.run_task_job(task_id)
+
+    with SessionLocal() as db:
+        log = db.query(TaskLog).one()
+        assert "21:31:05" in log.message
+        assert "13:31:05" not in log.message
+

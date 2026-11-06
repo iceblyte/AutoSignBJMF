@@ -151,3 +151,22 @@ def test_network_exception_returns_error(monkeypatch, student):
     _patch_session(monkeypatch, Boom())
 
     assert attendance.Task(student) == ("测试用户", "error")
+
+
+def test_all_list_requests_failing_reports_network_cause(monkeypatch, student, capsys):
+    """punchs/daka 两个列表页都请求失败时，不能再去引用未绑定的 response，
+    更不能把 NameError 当成真实原因打出来。"""
+    _patch_user_info(monkeypatch)
+
+    class Boom(FakeSession):
+        def get(self, url, timeout=None):
+            raise attendance.requests.exceptions.ConnectionError("boom")
+
+    _patch_session(monkeypatch, Boom())
+
+    assert attendance.Task(student) == ("测试用户", "error")
+    out = capsys.readouterr().out
+    assert "签到列表页请求失败" in out
+    assert "NameError" not in out
+    assert "未定义" not in out
+

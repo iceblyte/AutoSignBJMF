@@ -77,33 +77,38 @@ def Task(student):
         module_list = ['punchs', 'daka']
         all_matches = []
         all_punch_types = {}  # {id: punch_type}，记录每个签到项所属的模块类型
+        # 记住最后一次成功的列表页响应：两个模块全挂时它是 None，
+        # 后面不能再拿未绑定的 response 去解析页面（会抛 NameError 掩盖真实网络原因）。
+        last_response = None
 
         for module in module_list:
             list_url = f'https://bjmf.k8n.cn/student/course/{ClassID}/{module}'
             session.headers.update({'Referer': f'https://bjmf.k8n.cn/student/course/{ClassID}'})
 
             try:
-                response = session.get(list_url, timeout=10)
+                list_response = session.get(list_url, timeout=10)
             except Exception as e:
                 print(f"获取 {module} 列表页失败: {e}")
                 continue
 
+            last_response = list_response
+
             # 策略1: 查找 punchcard_ID 格式（DOM属性，模块无关）
             pattern_id = re.compile(r'punchcard_(\d+)')
-            for mid in pattern_id.findall(response.text):
+            for mid in pattern_id.findall(list_response.text):
                 if mid not in all_punch_types:
                     all_matches.append(mid)
                     all_punch_types[mid] = module
 
             # 策略2: 查找链接格式，支持 punchs/punchw/puncha 等以及 daka
             pattern_link = re.compile(r'/student/(punch\w+|daka)/course/\d+/(\d+)')
-            for ptype, mid in pattern_link.findall(response.text):
+            for ptype, mid in pattern_link.findall(list_response.text):
                 if mid not in all_punch_types:
                     all_matches.append(mid)
                     all_punch_types[mid] = ptype
 
             # 策略3: 检查是否直接跳转到了签到/打卡页面
-            current_url = response.url
+            current_url = list_response.url
             url_match = re.search(r'/student/(punch\w+|daka)/course/\d+/(\d+)', current_url)
             if url_match:
                 ptype, mid = url_match.group(1), url_match.group(2)
@@ -116,9 +121,14 @@ def Task(student):
         all_matches = list(set(all_matches))
 
         if not all_matches:
+            if last_response is None:
+                # 两个模块的列表页都没拿到，属于网络/凭证问题，不能当成「今天没签到」
+                print("所有签到列表页请求失败，无法判断签到状态（请检查网络或 Cookie）")
+                return name, 'error'
+
             # 尝试检测是否已经签到
-            soup_check = BeautifulSoup(response.text, 'html.parser')
-            
+            soup_check = BeautifulSoup(last_response.text, 'html.parser')
+
             # 检查方式1: punch-success-info
             success_info = soup_check.find(class_='punch-success-info')
             if success_info and "已签到" in success_info.get_text():
@@ -132,15 +142,16 @@ def Task(student):
                 return name, 'already_signed'
 
             print("未找到在进行的签到/不在签到时间内")
-            print(f"Debug: Status Code: {response.status_code}")
-            
+            print(f"Debug: Status Code: {last_response.status_code}")
+
             # Save HTML for debugging
             with open("debug_html.txt", "w", encoding="utf-8") as f:
-                f.write(response.text)
+                f.write(last_response.text)
             print("Debug: HTML saved to debug_html.txt")
-            
+
             # print(f"Debug: Response Text Preview: {response.text[:200]}") # Uncomment for more details
             return name, 'no_sign_in'
+
 
         # 处理每个签到/打卡项
         for match in all_matches:
