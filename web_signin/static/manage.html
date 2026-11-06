@@ -238,6 +238,32 @@
       font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
       color: #e5e7eb;
     }
+    /* 管理员登录 / 初始化遮罩 */
+    .auth-mask {
+      position: fixed;
+      inset: 0;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      background: rgba(2, 6, 23, 0.88);
+      backdrop-filter: blur(4px);
+      z-index: 50;
+      padding: 16px;
+    }
+    .auth-mask.show { display: flex; }
+    .auth-card {
+      width: min(420px, 100%);
+      background: rgba(15, 23, 42, 0.98);
+      border: 1px solid rgba(51, 65, 85, 0.9);
+      border-radius: var(--radius-lg);
+      padding: 18px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .auth-card h2 { font-size: 16px; margin: 0; }
+    .auth-card p { font-size: 12px; color: var(--text-soft); margin: 0; line-height: 1.6; }
+    .auth-error { color: var(--danger); font-size: 12px; min-height: 16px; }
   </style>
 </head>
 <body>
@@ -333,6 +359,18 @@
     </div>
   </div>
 
+  <div id="authMask" class="auth-mask">
+    <div class="auth-card">
+      <h2 id="authTitle">管理员登录</h2>
+      <p id="authHint"></p>
+      <input id="authKey" class="input" type="password" placeholder="管理员 Key" autocomplete="current-password" />
+      <div id="authError" class="auth-error"></div>
+      <div class="row" style="justify-content:flex-end;">
+        <button id="btnAuthSubmit" class="btn btn-primary">登录</button>
+      </div>
+    </div>
+  </div>
+
   <script>
     const apiBase = "";
 
@@ -359,6 +397,92 @@
 
     let currentTaskId = null;
     let tasksCache = [];
+
+    // ===== 管理员鉴权：Key 只存在 sessionStorage，调用 admin 接口时带 X-Admin-Token =====
+    const authMask = document.getElementById("authMask");
+    const authTitle = document.getElementById("authTitle");
+    const authHint = document.getElementById("authHint");
+    const authKey = document.getElementById("authKey");
+    const authError = document.getElementById("authError");
+    const btnAuthSubmit = document.getElementById("btnAuthSubmit");
+
+    let adminToken = sessionStorage.getItem("adminToken") || "";
+    let needInit = false;
+
+    async function refreshAuthMode() {
+      try {
+        const resp = await fetch(apiBase + "/api/admin/status");
+        const data = await resp.json();
+        needInit = !data.initialized;
+      } catch (e) {
+        needInit = false;
+      }
+      authTitle.textContent = needInit ? "初始化管理员 Key" : "管理员登录";
+      authHint.textContent = needInit
+        ? "首次使用请设置一个管理员 Key（数据库里只存 SHA-256 哈希）。设置成功后会用同一个 Key 自动登录。"
+        : "后台管理接口需要管理员 Key。Key 只保存在当前标签页，关闭标签页即失效。";
+      btnAuthSubmit.textContent = needInit ? "设置并登录" : "登录";
+      authError.textContent = "";
+      authKey.value = "";
+      authMask.classList.add("show");
+      authKey.focus();
+    }
+
+    function hideAuth() {
+      authMask.classList.remove("show");
+    }
+
+    async function adminFetch(url, options) {
+      const opts = Object.assign({}, options || {});
+      const headers = Object.assign({}, opts.headers || {});
+      if (adminToken) headers["X-Admin-Token"] = adminToken;
+      opts.headers = headers;
+      const resp = await fetch(apiBase + url, opts);
+      if (resp.status === 401) {
+        adminToken = "";
+        sessionStorage.removeItem("adminToken");
+        refreshAuthMode();
+      }
+      return resp;
+    }
+
+    async function submitAuth() {
+      const key = authKey.value.trim();
+      if (!key) {
+        authError.textContent = "请输入管理员 Key";
+        return;
+      }
+      try {
+        const endpoint = needInit ? "/api/admin/init" : "/api/admin/login";
+        const resp = await fetch(apiBase + endpoint, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ key })
+        });
+        const data = await resp.json();
+        if (!resp.ok) {
+          authError.textContent = data.error || "操作失败";
+          return;
+        }
+        if (needInit) {
+          // 初始化成功后立刻用同一个 Key 换 token
+          needInit = false;
+          await submitAuth();
+          return;
+        }
+        adminToken = data.token || "";
+        if (adminToken) sessionStorage.setItem("adminToken", adminToken);
+        hideAuth();
+        loadTasks();
+      } catch (e) {
+        authError.textContent = "请求失败：" + e.message;
+      }
+    }
+
+    btnAuthSubmit.addEventListener("click", submitAuth);
+    authKey.addEventListener("keydown", event => {
+      if (event.key === "Enter") submitAuth();
+    });
 
     function setHealth(ok) {
       healthDot.className = "status-dot" + (ok ? " ok" : " bad");
@@ -426,7 +550,7 @@
       if (filterClass.value.trim()) params.set("class_id", filterClass.value.trim());
       if (filterEnabled.value) params.set("enabled", filterEnabled.value);
       try {
-        const resp = await fetch(apiBase + "/api/admin/tasks?" + params.toString());
+        const resp = await adminFetch("/api/admin/tasks?" + params.toString());
         const data = await resp.json();
         if (!resp.ok) {
           taskTableBody.innerHTML = "<tr><td colspan='6'>加载失败：" + (data.error || "未知错误") + "</td></tr>";
@@ -483,7 +607,7 @@
         enabled: editEnabled.value === "1"
       };
       try {
-        const resp = await fetch(apiBase + "/api/admin/tasks/" + currentTaskId, {
+        const resp = await adminFetch("/api/admin/tasks/" + currentTaskId, {
           method: "PATCH",
           headers: {
             "Content-Type": "application/json"
@@ -511,9 +635,8 @@
         return;
       }
       try {
-        const resp = await fetch(apiBase + "/api/admin/tasks/" + currentTaskId, {
-          method: "DELETE",
-          headers: {}
+        const resp = await adminFetch("/api/admin/tasks/" + currentTaskId, {
+          method: "DELETE"
         });
         const data = await resp.json();
         if (!resp.ok) {
@@ -541,9 +664,7 @@
       }
       try {
         const params = new URLSearchParams({ task_id: String(currentTaskId), limit: "50" });
-        const resp = await fetch(apiBase + "/api/admin/logs?" + params.toString(), {
-          headers: {}
-        });
+        const resp = await adminFetch("/api/admin/logs?" + params.toString());
         const data = await resp.json();
         if (!resp.ok) {
           logList.innerHTML = '<div class="status-text">加载失败：' + (data.error || "未知错误") + "</div>";
@@ -594,6 +715,10 @@
 
     window.addEventListener("load", () => {
       checkHealth();
+      if (!adminToken) {
+        refreshAuthMode();
+        return;
+      }
       loadTasks();
     });
   </script>

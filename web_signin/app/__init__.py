@@ -11,8 +11,9 @@ if _ROOT_DIR not in sys.path:
 from flask import Flask, jsonify, request, send_from_directory
 from apscheduler.schedulers.background import BackgroundScheduler
 import secrets
-import time
 import hashlib
+import hmac
+import time
 from datetime import datetime, timedelta
 
 from .db import init_db
@@ -444,17 +445,56 @@ def create_app():
         setting = db.query(Setting).filter(Setting.key == "admin_key_hash").first()
         return setting.value if setting else None
 
+    def _admin_token_from_request():
+        """管理员 token 依次从请求头、查询参数、JSON body 中取。"""
+        token = request.headers.get("X-Admin-Token")
+        if not token:
+            token = request.args.get("admin_token")
+        if not token:
+            body = request.get_json(silent=True) or {}
+            if isinstance(body, dict):
+                token = body.get("admin_token")
+        return (token or "").strip()
+
     def _require_admin(app):
         """
         管理员认证校验。
 
-        当前部署需求：后台无需密码即可查看与管理所有任务，
-        因此此函数直接放行，不再强制要求 admin token。
+        返回 (token, None) 表示通过；返回 (None, (响应, 状态码)) 表示拒绝。
 
-        如需重新开启鉴权，可恢复为从请求头 `X-Admin-Token` /
-        查询参数 `admin_token` 中读取 token 并校验有效期。
+        - 还没初始化管理员 Key 时返回 401 + need_init，前端据此展示「设置管理员 Key」；
+        - 已初始化但没有 token / token 无效 / token 过期，一律 401。
+          这样即使把服务暴露到 0.0.0.0，别人也不能直接读写别人的 Cookie 任务。
         """
-        return "public", None
+        SessionLocal = app.config["DB_SESSION_FACTORY"]
+        with SessionLocal() as db:
+            if not _get_admin_key_hash(db):
+                return None, (
+                    jsonify({"error": "admin key not initialized", "need_init": True}),
+                    401,
+                )
+
+        token = _admin_token_from_request()
+        if not token:
+            return None, (jsonify({"error": "missing admin token"}), 401)
+
+        tokens = app.config.setdefault("ADMIN_TOKENS", {})
+        expire_at = tokens.get(token)
+        if expire_at is None:
+            return None, (jsonify({"error": "invalid admin token"}), 401)
+        if datetime.utcnow() > expire_at:
+            tokens.pop(token, None)
+            return None, (jsonify({"error": "admin token expired"}), 401)
+
+        return token, None
+
+    @app.get("/api/admin/status")
+    def api_admin_status():
+        """公开的状态查询：管理员 Key 是否已经初始化，供管理页决定显示登录还是初始化。"""
+        SessionLocal = app.config["DB_SESSION_FACTORY"]
+        with SessionLocal() as db:
+            initialized = bool(_get_admin_key_hash(db))
+        return jsonify({"initialized": initialized})
 
     @app.post("/api/admin/init")
     def api_admin_init():
@@ -506,7 +546,7 @@ def create_app():
             if not key_hash:
                 return jsonify({"error": "admin key not initialized"}), 400
 
-            if _hash_admin_key(key) != key_hash:
+            if not hmac.compare_digest(_hash_admin_key(key), key_hash):
                 return jsonify({"error": "invalid admin key"}), 401
 
         # 生成 admin token，默认有效期 24 小时
