@@ -15,20 +15,81 @@
 
 | 方式 | 适合谁 | 特点 |
 | --- | --- | --- |
+| [桌面版 exe](#方式零桌面版-exe最省事) | 只想双击运行的人 | 图形界面选时间、选坐标，关窗口缩到托盘继续跑 |
 | [GitHub Actions](#方式一github-actions免服务器) | 不想养机器的人 | 零成本，但官方文档明确说明 `schedule` 事件在高负载时段会被延迟，定时不保证准点 |
 | [本地常驻](#方式二本地常驻到自己电脑上跑) | 白天电脑常开的学生 | 用系统本地时间触发，到点即跑，不受 Actions 排队影响 |
 | [服务器部署](#方式三服务器部署docker-或-systemd) | 有 VPS /  NAS 的人 | 24 小时在线，最稳定 |
 
-三种方式最终执行的都是同一套签到逻辑（`BJMF.py`），只是触发器不同。
+四种方式最终执行的都是同一套签到逻辑（`utils/runner.py` → `utils/attendance.py`），只是触发器不同。
+
+## 方式零：桌面版 exe（最省事）
+
+双击 `AutoSignBJMF.exe` 打开窗口：
+
+1. 「扫码添加 / 更新」用微信扫码，自动填入 Cookie、姓名、班级（支持多个账号）
+2. 「打开高德坐标拾取器」→ 浏览器打开 <https://lbs.amap.com/tools/picker>，选好位置复制坐标，粘回弹窗
+3. 「每天执行时间」里加多个时间点（如 07:30、21:31），可配失败重试次数与间隔
+4. 点「启动后台运行」，关掉窗口就缩到右下角托盘，签到继续
+
+数据放在哪：
+
+| 形态 | 数据位置 |
+| --- | --- |
+| 绿色版（exe 同级有 `data/`） | 就近写 `data/`，整个目录可以拷到 U 盘 |
+| 单文件版（只有 exe） | `C:\Users\<用户名>\AutoSignBJMF\` |
+
+里面是 `data.json`（账号/Cookie/坐标）、`settings.json`（时间点）、`logs/`（运行日志）。
+
+源码直接运行（开发用）：
+
+```bash
+uv pip install -r requirements-desktop.txt
+python desktop/main.py
+```
+
+打包（需要 `pyinstaller`）：
+
+```powershell
+uv pip install -r requirements-desktop.txt pyinstaller
+powershell -ExecutionPolicy Bypass -File build\build.ps1
+
+# 只出 exe，不压缩
+powershell -ExecutionPolicy Bypass -File build\build.ps1 -SkipZip
+```
+
+产物：
+
+- `dist\AutoSignBJMF.exe` —— 单文件版
+- `dist\AutoSignBJMF\` —— 绿色版目录（含 `data\`）
+- `dist\AutoSignBJMF-便携版.zip` —— 干净的压缩包，**不含任何 Cookie 配置**，可直接分发
+
+打包后自检：
+
+```powershell
+.\dist\AutoSignBJMF.exe --self-check   # 检查依赖与数据目录，结果写到 selfcheck.txt
+.\dist\AutoSignBJMF.exe --smoke        # 建一次隐藏窗口再销毁，验证 tkinter/托盘是否齐全
+```
 
 ## 代码结构
 
 ```
 AutoSignBJMF/
-├── BJMF.py                     # 主程序，负责整体流程控制
+├── BJMF.py                     # 命令行入口（薄壳，逻辑在 utils/runner.py）
 ├── signin_loop.py              # 本地/服务器常驻脚本，按时间点每天定时执行 BJMF.py
 ├── auto_add_user.py            # 自动添加用户工具，通过微信扫码获取用户信息并写入 data.json
+├── desktop/                    # 桌面版（tkinter + 托盘 + 内置调度）
+│   ├── main.py                 # 入口，含 --self-check / --smoke 自检
+│   ├── app.py                  # 主窗口
+│   ├── qr_dialog.py            # 扫码登录窗口
+│   ├── qr_client.py            # 二维码获取 / 轮询 / 换 Cookie
+│   ├── scheduler.py            # 后台调度（失败重试、暂停恢复）
+│   ├── settings.py             # settings.json 读写
+│   ├── paths.py                # 绿色版 / 用户目录的路径判定
+│   ├── tray.py                 # 系统托盘
+│   └── autostart.py            # 开机自启（HKCU Run）
+├── build/                      # PyInstaller 打包脚本与图标生成
 ├── requirements.txt            # 命令行版依赖
+├── requirements-desktop.txt    # 桌面版依赖（额外 pystray）
 ├── requirements-dev.txt        # 开发/测试依赖
 ├── .env                        # (可选) 环境变量配置文件，用于配置公共参数
 ├── .github/workflows/
@@ -39,6 +100,8 @@ AutoSignBJMF/
 ├── tests/                      # pytest 单元测试（全程 mock，不会触发真实签到）
 ├── utils/                      # 工具模块目录
 │   ├── __init__.py             # 模块初始化文件
+│   ├── runner.py               # 单次签到流程（命令行与桌面端共用）
+│   ├── timepoints.py           # 时间点解析与下次触发时间
 │   ├── config_manager.py       # 配置文件管理模块
 │   ├── user_info.py            # 用户信息获取模块
 │   ├── notification.py         # 通知发送模块
@@ -48,7 +111,8 @@ AutoSignBJMF/
 
 ### 各模块职责
 
-- **BJMF.py**: 主程序入口，负责读取配置、遍历用户、调用签到任务
+- **BJMF.py**: 命令行入口，读取 `data.json` 并调用 `utils.runner.run_once`
+- **desktop/**: 桌面版，签到时同样调用 `run_once`，只是触发器换成了界面里的时间点
 - **signin_loop.py**: 常驻调度，睡眠到设定时间点再调用 `BJMF.py`
 - **auto_add_user.py**: 自动添加用户工具，通过微信扫码自动获取 Cookie 和班级信息并写入 `data.json`；支持读取 `.env` 公共配置
 - **config_manager.py**: 处理配置文件的读取和保存
@@ -65,6 +129,17 @@ AutoSignBJMF/
 - 支持 `.env` 配置公共参数，简化多人配置
 
 ## 更新说明
+
+- 2026.11.09
+  - 新增桌面版 `desktop/`：tkinter 窗口 + 系统托盘，多账号管理、内置微信扫码登录、
+    一键打开高德坐标拾取器、每天多个时间点、失败自动重试、关窗缩到托盘继续跑
+  - 抽出 `utils/runner.py`（单次签到流程）与 `utils/timepoints.py`（时间点计算），
+    命令行、常驻脚本、桌面端、Web 端共用同一套逻辑；`BJMF.py` 变为薄壳
+  - 新增 `build/build.ps1`：PyInstaller 一键打包，产出单文件 exe、绿色版目录与
+    便携版 zip（zip 内不含任何 Cookie 配置，可安全分发）
+  - 数据目录双模式：exe 同级有 `data/` 时走绿色版，否则写到 `%USERPROFILE%\AutoSignBJMF`
+  - 新增 `--self-check` / `--smoke` 两个自检开关，方便验证打包产物
+  - 测试增加到 181 个，覆盖 runner、时间点、桌面端配置/调度/扫码/窗口构建
 
 - 2026.11.06
   - 修复: `SQLAlchemy==2.0.29` 在 Python 3.13 下导入即崩（`AssertionError: ...directly inherits TypingOnly...`），
@@ -387,14 +462,16 @@ pip install -r requirements-dev.txt
 pytest
 ```
 
-覆盖范围：`attendance` 的六种状态分支与多模块探测、`user_info` 的 Cookie 提取与页面解析、`notification` 的消息格式与超时、`config_manager` 的读写、`BJMF.py` 的 WXKey 选取与班级回填与退出码、`signin_loop` 的时间计算、`web_signin` 调度器的时区与日志状态映射、全部 Flask 接口（任务创建/查询/日志、用户配置、管理员初始化/登录/token 鉴权/改删）以及 `auto_add_user` 的配置路径与日志脱敏。
+覆盖范围：`attendance` 的六种状态分支与多模块探测、`user_info` 的 Cookie 提取与页面解析、`notification` 的消息格式与超时、`config_manager` 的读写、`runner` 的退出码与班级回填、`signin_loop` 的时间计算、`web_signin` 调度器的时区与日志状态映射、全部 Flask 接口（任务创建/查询/日志、用户配置、管理员初始化/登录/token 鉴权/改删）、`auto_add_user` 的配置路径与日志脱敏，以及桌面端的数据目录判定、设置归一化、调度重试/暂停/跨点补跑、扫码 Cookie 提取和窗口构建冒烟。
 
-当前共 **124 个用例**，其中 `tests/test_web_api.py` 用 Flask `test_client` + 临时 SQLite 覆盖后端接口，不启动真实调度线程之外的任何外部依赖。
+当前共 **181 个用例**，其中 `tests/test_web_api.py` 用 Flask `test_client` + 临时 SQLite 覆盖后端接口；`tests/test_desktop_*.py` 覆盖桌面端逻辑，唯一需要图形环境的是 `test_desktop_app.py`（无桌面会话时会自动跳过）。
 
 ## 文件与隐私说明
 
 - `data.json`、`.env`、`web_signin/config.json`、`web_signin/db/` 包含个人 Cookie、经纬度、推送 Key，
   **已全部写入 `.gitignore`，不会被提交**，请自行保管。
+- 桌面版把同样的凭证写在 `data\data.json`（绿色版）或 `%USERPROFILE%\AutoSignBJMF\data.json`（单 exe），
+  这两个位置同样不在仓库里；`dist\AutoSignBJMF-便携版.zip` 是干净的，不含任何凭证，可以直接发给别人。
 - 签到失败时程序会在当前目录生成 `debug_html.txt`（页面快照，含真实姓名与班级 ID），同样已被忽略；
   扫码登录失败时还可能生成 `web_signin/debug_qr.html`，`auto_add_user.py` 会生成 `login_qrcode.png`（含二维码票据），
   这两个也已加入 `.gitignore`。**对外分享日志或截图前，请手动打码或删除其中的 Cookie、班级 ID、经纬度等隐私信息。**
