@@ -10,16 +10,17 @@ APP_NAME = "班级魔方自动签到"
 
 
 def _make_icon_image(size=64):
-    """画一个蓝底对勾的图标，省得额外带 .ico 资源。"""
-    from PIL import Image, ImageDraw
+    """应用图标：直接使用 assets/logo.png，保证与窗口内标识、exe 图标一致。"""
+    from PIL import Image
 
-    image = Image.new("RGBA", (size, size), (0, 0, 0, 0))
-    draw = ImageDraw.Draw(image)
-    draw.rounded_rectangle((3, 3, size - 3, size - 3), radius=14, fill=(37, 99, 235, 255))
-    width = max(3, size // 10)
-    draw.line((size * 0.26, size * 0.52, size * 0.44, size * 0.70), fill="white", width=width)
-    draw.line((size * 0.44, size * 0.70, size * 0.75, size * 0.33), fill="white", width=width)
-    return image
+    from desktop.theme import _logo_path
+
+    try:
+        image = Image.open(_logo_path()).convert("RGBA")
+        return image.resize((size, size), Image.LANCZOS)
+    except Exception:
+        image = Image.new("RGBA", (size, size), (37, 99, 235, 255))
+        return image
 
 
 class TrayController:

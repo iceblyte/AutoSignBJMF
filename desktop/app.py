@@ -13,6 +13,7 @@ from tkinter import messagebox, simpledialog, ttk
 import desktop.autostart as autostart
 import desktop.paths as paths
 import desktop.settings as settings_store
+import desktop.theme as theme
 from desktop.qr_dialog import QRLoginDialog
 from desktop.scheduler import DailyScheduler
 from desktop.tray import TrayController
@@ -37,8 +38,8 @@ class SigninApp:
     def __init__(self, root):
         self.root = root
         self.root.title(APP_TITLE)
-        self.root.geometry("840x700")
-        self.root.minsize(780, 640)
+        self.root.geometry("1080x800")
+        self.root.minsize(960, 720)
 
         self.config_path = paths.config_path()
         self.settings_path = paths.settings_path()
@@ -72,152 +73,234 @@ class SigninApp:
     # ================= 界面搭建 =================
 
     def _build_style(self):
-        style = ttk.Style()
-        try:
-            if "vista" in style.theme_names():
-                style.theme_use("vista")
-        except tk.TclError:
-            pass
-        style.configure("Hint.TLabel", foreground="#6b7280")
-        style.configure("Status.TLabel", foreground="#1d4ed8")
-        style.configure("Warn.TLabel", foreground="#b45309")
+        theme.apply_theme(self.root)
 
     def _build_ui(self):
-        main = ttk.Frame(self.root, padding=(12, 10, 12, 10))
-        main.pack(fill="both", expand=True)
+        outer = tk.Frame(self.root, bg=theme.C["bg"])
+        outer.pack(fill="both", expand=True)
 
-        self._build_accounts(main)
-        self._build_detail(main)
-        self._build_schedule(main)
-        self._build_controls(main)
-        self._build_log(main)
+        self._build_topbar(outer)
+
+        body = tk.Frame(outer, bg=theme.C["bg"])
+        body.pack(fill="both", expand=True, padx=16, pady=(12, 14))
+
+        side, side_body = theme.card(body, "账号", "扫码添加，可维护多个学生", pad=12)
+        side.pack(side="left", fill="y")
+        side.configure(width=262)
+        side.pack_propagate(False)
+        self._build_accounts(side_body)
+
+        right = tk.Frame(body, bg=theme.C["bg"])
+        right.pack(side="left", fill="both", expand=True, padx=(12, 0))
+
+        self._build_detail(right)
+
+        middle = tk.Frame(right, bg=theme.C["bg"])
+        middle.pack(fill="both", expand=True, pady=(12, 0))
+        self._build_schedule(middle)
+        self._build_log(middle)
+
+        self._build_controls(right)
+
+    def _build_topbar(self, parent):
+        bar = tk.Frame(parent, bg=theme.C["surface"])
+        bar.pack(fill="x")
+        tk.Frame(bar, bg=theme.C["border"], height=1).pack(side="bottom", fill="x")
+
+        inner = tk.Frame(bar, bg=theme.C["surface"])
+        inner.pack(fill="x", padx=16, pady=11)
+
+        theme.brand_mark(inner, 30).pack(side="left")
+        title_box = tk.Frame(inner, bg=theme.C["surface"])
+        title_box.pack(side="left", padx=(10, 0))
+        tk.Label(
+            title_box, text="班级魔方自动签到",
+            bg=theme.C["surface"], fg=theme.C["text"], font=theme.FONT_HEAD,
+        ).pack(anchor="w")
+        tk.Label(
+            title_box, text="扫码一次，之后每天按时间自动签到",
+            bg=theme.C["surface"], fg=theme.C["text3"], font=theme.FONT_SMALL,
+        ).pack(anchor="w")
+
+        self.status_var = tk.StringVar(value="未运行")
+        self.status_pill = theme.pill(inner, "未运行", "idle")
+        self.status_pill.pack(side="right")
+        self.status_var.trace_add("write", lambda *_: self._sync_status_pill())
+
+        self.autostart_var = tk.BooleanVar(value=autostart.is_autostart_enabled())
+        ttk.Checkbutton(
+            inner, text="开机自启", variable=self.autostart_var, command=self._toggle_autostart
+        ).pack(side="right", padx=(0, 14))
+
+    def _sync_status_pill(self):
+        text = self.status_var.get()
+        if text.startswith("运行中"):
+            kind = "ok"
+        elif "暂停" in text:
+            kind = "warn"
+        elif "异常" in text or "失败" in text:
+            kind = "err"
+        else:
+            kind = "idle"
+        bg, fg = {
+            "ok": (theme.C["success_soft"], theme.C["success"]),
+            "warn": (theme.C["warning_soft"], theme.C["warning"]),
+            "err": (theme.C["danger_soft"], theme.C["danger"]),
+            "idle": (theme.C["muted"], theme.C["text2"]),
+        }[kind]
+        self.status_pill.configure(text="● " + text, bg=bg, fg=fg)
+
+    def _field(self, parent, label, variable, width=10, show=None):
+        box = tk.Frame(parent, bg=theme.C["surface"])
+        tk.Label(
+            box, text=label, bg=theme.C["surface"], fg=theme.C["text3"], font=theme.FONT_SMALL
+        ).pack(anchor="w")
+        entry = ttk.Entry(box, textvariable=variable, width=width, show=show)
+        entry.pack(anchor="w", pady=(4, 0))
+        return box
 
     def _build_accounts(self, parent):
-        box = ttk.LabelFrame(parent, text="账号", padding=8)
-        box.pack(fill="x")
+        holder = tk.Frame(parent, bg=theme.C["surface"])
+        holder.pack(fill="both", expand=True)
 
         self.tree = ttk.Treeview(
-            box, columns=("name", "class_id", "coord"), show="headings", height=4, selectmode="browse"
+            holder, columns=("name", "class_id"), show="headings", height=9, selectmode="browse"
         )
         for key, label, width in (
-            ("name", "姓名", 150),
-            ("class_id", "班级", 110),
-            ("coord", "经纬度", 240),
+            ("name", "姓名", 118),
+            ("class_id", "班级", 96),
         ):
-            self.tree.heading(key, text=label)
-            self.tree.column(key, width=width, anchor="w")
+            self.tree.heading(key, text=label, anchor="w")
+            self.tree.column(key, width=width, anchor="w", minwidth=60, stretch=True)
         self.tree.pack(side="left", fill="both", expand=True)
         self.tree.bind("<<TreeviewSelect>>", lambda _event: self._on_select())
 
-        scroll = ttk.Scrollbar(box, orient="vertical", command=self.tree.yview)
+        scroll = ttk.Scrollbar(holder, orient="vertical", command=self.tree.yview)
         self.tree.configure(yscrollcommand=scroll.set)
         scroll.pack(side="left", fill="y")
 
-        actions = ttk.Frame(box)
-        actions.pack(side="left", fill="y", padx=(10, 0))
-        ttk.Button(actions, text="扫码添加 / 更新", command=self._open_qr_dialog).pack(fill="x", pady=(0, 6))
-        ttk.Button(actions, text="删除选中", command=self._delete_student).pack(fill="x")
+        actions = tk.Frame(parent, bg=theme.C["surface"])
+        actions.pack(fill="x", pady=(10, 0))
+        theme.primary_button(actions, "扫码添加 / 更新", self._open_qr_dialog).pack(fill="x")
+        theme.ghost_button(actions, "删除选中", self._delete_student).pack(fill="x", pady=(6, 0))
 
     def _build_detail(self, parent):
-        box = ttk.LabelFrame(parent, text="位置与通知（选中账号后修改）", padding=8)
-        box.pack(fill="x", pady=(8, 0))
+        outer, body = theme.card(
+            parent, "位置与通知", "选中账号后修改；签到位置就是这里的经纬度"
+        )
+        outer.pack(fill="x")
 
-        row1 = ttk.Frame(box)
+        row1 = tk.Frame(body, bg=theme.C["surface"])
         row1.pack(fill="x")
         self.lat_var = tk.StringVar()
         self.lng_var = tk.StringVar()
         self.acc_var = tk.StringVar(value="30")
-        for label, var, width in (
-            ("纬度", self.lat_var, 12),
-            ("经度", self.lng_var, 12),
-            ("精度", self.acc_var, 6),
-        ):
-            ttk.Label(row1, text=label).pack(side="left")
-            ttk.Entry(row1, textvariable=var, width=width).pack(side="left", padx=(4, 12))
-        ttk.Button(row1, text="打开高德坐标拾取器", command=self._open_amap).pack(side="left")
-        ttk.Button(row1, text="保存", command=self._save_student).pack(side="right")
+        self._field(row1, "纬度", self.lat_var, 12).pack(side="left")
+        self._field(row1, "经度", self.lng_var, 12).pack(side="left", padx=(10, 0))
+        self._field(row1, "精度", self.acc_var, 6).pack(side="left", padx=(10, 0))
+        theme.ghost_button(row1, "打开高德坐标拾取器", self._open_amap).pack(side="left", padx=(12, 0), pady=(30, 0))
+        theme.primary_button(row1, "保存", self._save_student).pack(side="right", pady=(30, 0))
 
-        row2 = ttk.Frame(box)
-        row2.pack(fill="x", pady=(8, 0))
+        row2 = tk.Frame(body, bg=theme.C["surface"])
+        row2.pack(fill="x", pady=(10, 0))
         self.wx_var = tk.StringVar()
         self.qq_var = tk.StringVar()
-        for label, var in (("微信通知 Key", self.wx_var), ("QQ 通知 Key", self.qq_var)):
-            ttk.Label(row2, text=label).pack(side="left")
-            ttk.Entry(row2, textvariable=var, width=26).pack(side="left", padx=(4, 16))
+        self._field(row2, "微信通知 Key", self.wx_var, 22).pack(side="left")
+        self._field(row2, "QQ 通知 Key", self.qq_var, 22).pack(side="left", padx=(10, 0))
 
-        ttk.Label(
-            box,
-            text="签到位置就是这里填的经纬度；班级与 Cookie 由扫码自动填充。",
-            style="Hint.TLabel",
-        ).pack(anchor="w", pady=(6, 0))
+        tk.Label(
+            body,
+            text="班级与 Cookie 由扫码自动填充；通知 Key 留空表示不推送。",
+            bg=theme.C["surface"], fg=theme.C["text3"], font=theme.FONT_SMALL,
+        ).pack(anchor="w", pady=(8, 0))
 
     def _build_schedule(self, parent):
-        box = ttk.LabelFrame(parent, text="每天执行时间", padding=8)
-        box.pack(fill="x", pady=(8, 0))
+        outer, body = theme.card(parent, "每天执行时间", "可加多条；重试填 0 表示失败后不再重试")
+        outer.pack(side="left", fill="y")
+        outer.configure(width=382)
+        outer.pack_propagate(False)
 
-        content = ttk.Frame(box)
-        content.pack(fill="x")
+        content = tk.Frame(body, bg=theme.C["surface"])
+        content.pack(fill="both", expand=True)
 
-        self.times_list = tk.Listbox(content, height=4, activestyle="none", exportselection=False)
+        self.times_list = tk.Listbox(
+            content,
+            height=6,
+            activestyle="none",
+            exportselection=False,
+            bg=theme.C["surface"], fg=theme.C["text"],
+            selectbackground=theme.C["accent_soft"], selectforeground=theme.C["text"],
+            bd=0, relief="flat", highlightthickness=1,
+            highlightbackground=theme.C["border"], highlightcolor=theme.C["border"],
+            font=theme.FONT_MONO,
+        )
         self.times_list.pack(side="left", fill="both", expand=True)
         times_scroll = ttk.Scrollbar(content, orient="vertical", command=self.times_list.yview)
         self.times_list.configure(yscrollcommand=times_scroll.set)
         times_scroll.pack(side="left", fill="y")
 
-        editor = ttk.Frame(content)
-        editor.pack(side="left", fill="y", padx=(10, 0))
+        editor = tk.Frame(body, bg=theme.C["surface"])
+        editor.pack(fill="x", pady=(8, 0))
         self.new_time_var = tk.StringVar(value="07:30")
-        entry_row = ttk.Frame(editor)
-        entry_row.pack(fill="x")
-        ttk.Entry(entry_row, textvariable=self.new_time_var, width=10).pack(side="left")
-        ttk.Button(entry_row, text="添加", width=6, command=self._add_time).pack(side="left", padx=(6, 0))
-        ttk.Button(editor, text="删除选中", command=self._remove_time).pack(fill="x", pady=(6, 0))
+        ttk.Entry(editor, textvariable=self.new_time_var, width=9).pack(side="left")
+        theme.primary_button(editor, "添加", self._add_time).pack(side="left", padx=(6, 0))
+        theme.ghost_button(editor, "删除选中", self._remove_time).pack(side="left", padx=(6, 0))
 
-        retry = ttk.Frame(box)
-        retry.pack(fill="x", pady=(8, 0))
+        retry = tk.Frame(body, bg=theme.C["surface"])
+        retry.pack(fill="x", side="bottom", pady=(10, 0))
         self.retry_attempts_var = tk.StringVar(value=str(self.settings["retry_attempts"]))
         self.retry_delay_var = tk.StringVar(value=str(self.settings["retry_delay_minutes"]))
-        ttk.Label(retry, text="失败后重试").pack(side="left")
+        tk.Label(
+            retry, text="失败后重试", bg=theme.C["surface"], fg=theme.C["text3"], font=theme.FONT_SMALL
+        ).pack(side="left")
         ttk.Spinbox(retry, from_=1, to=10, width=4, textvariable=self.retry_attempts_var).pack(
-            side="left", padx=(4, 4)
+            side="left", padx=(6, 6)
         )
-        ttk.Label(retry, text="次，每次间隔").pack(side="left")
+        tk.Label(
+            retry, text="次，间隔", bg=theme.C["surface"], fg=theme.C["text3"], font=theme.FONT_SMALL
+        ).pack(side="left", padx=(0, 2))
         ttk.Spinbox(retry, from_=0, to=120, width=4, textvariable=self.retry_delay_var).pack(
-            side="left", padx=(4, 4)
+            side="left", padx=(6, 6)
         )
-        ttk.Label(retry, text="分钟（0 表示不重试）").pack(side="left")
-
-    def _build_controls(self, parent):
-        box = ttk.Frame(parent)
-        box.pack(fill="x", pady=(10, 0))
-
-        self.btn_start = ttk.Button(box, text="启动后台运行", command=self._start_scheduler)
-        self.btn_start.pack(side="left")
-        self.btn_stop = ttk.Button(box, text="停止", command=self._stop_scheduler, state="disabled")
-        self.btn_stop.pack(side="left", padx=(6, 0))
-        self.btn_run = ttk.Button(box, text="立即签到一次", command=self._run_now)
-        self.btn_run.pack(side="left", padx=(6, 0))
-        ttk.Button(box, text="打开数据目录", command=self._open_data_dir).pack(side="left", padx=(6, 0))
-
-        self.autostart_var = tk.BooleanVar(value=autostart.is_autostart_enabled())
-        ttk.Checkbutton(
-            box, text="开机自启", variable=self.autostart_var, command=self._toggle_autostart
-        ).pack(side="right")
-
-        self.status_var = tk.StringVar(value="未运行")
-        ttk.Label(parent, textvariable=self.status_var, style="Status.TLabel").pack(
-            anchor="w", pady=(6, 0)
-        )
+        tk.Label(
+            retry, text="分钟",
+            bg=theme.C["surface"], fg=theme.C["text3"], font=theme.FONT_SMALL,
+        ).pack(side="left")
 
     def _build_log(self, parent):
-        box = ttk.LabelFrame(parent, text="运行日志", padding=6)
-        box.pack(fill="both", expand=True, pady=(8, 0))
+        outer, body = theme.card(parent, "运行日志", "关闭窗口会缩到托盘，签到继续执行")
+        outer.pack(side="left", fill="both", expand=True, padx=(12, 0))
 
-        self.log_text = tk.Text(box, height=9, wrap="word", state="disabled")
+        holder = tk.Frame(body, bg=theme.C["surface2"])
+        holder.pack(fill="both", expand=True)
+        self.log_text = tk.Text(
+            holder,
+            height=8,
+            wrap="word",
+            state="disabled",
+            bg=theme.C["surface2"], fg=theme.C["text2"],
+            bd=0, relief="flat", highlightthickness=0,
+            padx=10, pady=8,
+            font=theme.FONT_MONO,
+            insertbackground=theme.C["text"],
+        )
         self.log_text.pack(side="left", fill="both", expand=True)
-        scroll = ttk.Scrollbar(box, orient="vertical", command=self.log_text.yview)
+        scroll = ttk.Scrollbar(holder, orient="vertical", command=self.log_text.yview)
         self.log_text.configure(yscrollcommand=scroll.set)
         scroll.pack(side="left", fill="y")
+
+    def _build_controls(self, parent):
+        box = tk.Frame(parent, bg=theme.C["bg"])
+        box.pack(fill="x", pady=(12, 0))
+
+        self.btn_start = theme.primary_button(box, "启动后台运行", self._start_scheduler)
+        self.btn_start.pack(side="left")
+        self.btn_stop = theme.ghost_button(box, "停止", self._stop_scheduler)
+        self.btn_stop.configure(state="disabled")
+        self.btn_stop.pack(side="left", padx=(6, 0))
+        self.btn_run = theme.ghost_button(box, "立即签到一次", self._run_now)
+        self.btn_run.pack(side="left", padx=(6, 0))
+        theme.link_button(box, "打开数据目录", self._open_data_dir).pack(side="left", padx=(12, 0))
 
     # ================= 数据 =================
 
@@ -229,17 +312,18 @@ class SigninApp:
             self.config = {"students": []}
         self.students = self.config.setdefault("students", [])
         self._refresh_tree()
+        if self.students and not self.tree.selection():
+            self.tree.selection_set("0")
 
     def _refresh_tree(self):
         for item in self.tree.get_children():
             self.tree.delete(item)
         for index, student in enumerate(self.students):
-            coord = f"{student.get('lat', '')} {student.get('lng', '')}".strip()
             self.tree.insert(
                 "",
                 "end",
                 iid=str(index),
-                values=(student.get("name", ""), student.get("class", ""), coord),
+                values=(student.get("name", ""), student.get("class", "")),
             )
 
     def _selected_index(self):
