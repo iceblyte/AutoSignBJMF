@@ -10,50 +10,14 @@ import os
 import subprocess
 import sys
 import time
-from datetime import datetime, timedelta
+from datetime import datetime
+
+from utils.timepoints import next_fire, parse_times
 
 SCRIPT_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "BJMF.py")
 
 # 分片睡眠，保证 Ctrl+C 随时能停下来，也避免长睡眠被系统休眠打断后不再醒来
 MAX_SLEEP_SECONDS = 60
-
-
-def parse_times(raw):
-    """把 "21:31, 7:30:05" 解析成排序去重后的 ["07:30:05", "21:31:00"]。"""
-    times = []
-    for chunk in (raw or "").split(","):
-        chunk = chunk.strip()
-        if not chunk:
-            continue
-        parts = chunk.split(":")
-        if len(parts) not in (2, 3):
-            raise ValueError(f"时间格式错误: {chunk}，应形如 HH:MM 或 HH:MM:SS")
-        try:
-            hour, minute = int(parts[0]), int(parts[1])
-            second = int(parts[2]) if len(parts) == 3 else 0
-        except ValueError:
-            raise ValueError(f"时间格式错误: {chunk}，应形如 HH:MM 或 HH:MM:SS")
-        if not (0 <= hour < 24 and 0 <= minute < 60 and 0 <= second < 60):
-            raise ValueError(f"时间超出范围: {chunk}")
-        times.append(f"{hour:02d}:{minute:02d}:{second:02d}")
-
-    if not times:
-        raise ValueError("至少需要一个时间点，例如 --times 21:31")
-    return sorted(set(times))
-
-
-def next_fire(times, now):
-    """返回严格晚于 now 的下一个执行时间点。"""
-    candidates = []
-    for time_str in times:
-        hour, minute, second = (int(part) for part in time_str.split(":"))
-        for day_offset in (0, 1):
-            day = (now + timedelta(days=day_offset)).date()
-            candidate = datetime(day.year, day.month, day.day, hour, minute, second)
-            if candidate > now:
-                candidates.append(candidate)
-                break
-    return min(candidates)
 
 
 def wait_until(target, now_fn=datetime.now, sleep_fn=time.sleep):
