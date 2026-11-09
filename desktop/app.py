@@ -40,6 +40,7 @@ class SigninApp:
         self.root.title(APP_TITLE)
         self.root.geometry("1080x800")
         self.root.minsize(960, 720)
+        self._apply_window_icon()
 
         self.config_path = paths.config_path()
         self.settings_path = paths.settings_path()
@@ -71,6 +72,18 @@ class SigninApp:
             self.root.after(600, lambda: self._start_scheduler(quiet=True))
 
     # ================= 界面搭建 =================
+
+    def _apply_window_icon(self):
+        """窗口与任务栏使用与 exe 相同的 logo，不设的话 Windows 会显示 Tk 默认羽毛图标。"""
+        try:
+            from PIL import Image, ImageTk
+
+            image = Image.open(theme._logo_path()).convert("RGBA")
+            image = image.resize((64, 64), Image.LANCZOS)
+            self._window_icon = ImageTk.PhotoImage(image)
+            self.root.iconphoto(True, self._window_icon)
+        except Exception:
+            pass
 
     def _build_style(self):
         theme.apply_theme(self.root)
