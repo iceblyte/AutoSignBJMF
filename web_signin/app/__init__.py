@@ -44,7 +44,9 @@ def _parse_coord_string(coord: str):
 
 
 def create_app():
-    app = Flask(__name__)
+    # 静态资源位于 web_signin/static（Flask 默认会去找 app/static，那里没有）
+    static_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "static")
+    app = Flask(__name__, static_folder=static_dir, static_url_path="/static")
 
     # 初始化数据库
     engine, SessionLocal = init_db()

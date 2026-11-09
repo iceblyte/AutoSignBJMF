@@ -4,369 +4,243 @@
   <meta charset="UTF-8" />
   <title>签到任务后台管理</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link rel="icon" type="image/png" href="/static/logo.png" />
+  <link rel="stylesheet" href="/static/theme.css" />
+  <script src="/static/theme.js" defer></script>
   <style>
-    :root {
-      --bg: #020617;
-      --card-bg: #020617;
-      --accent: #38bdf8;
-      --border-subtle: #1e293b;
-      --text-main: #e5e7eb;
-      --text-soft: #9ca3af;
-      --danger: #f97373;
-      --success: #22c55e;
-      --radius-lg: 14px;
+    .admin-page { padding: 20px 20px 40px; }
+    .admin-shell {
+      max-width: 1320px; margin: 0 auto;
+      display: grid; grid-template-columns: 216px minmax(0, 1fr);
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: var(--r-lg); box-shadow: var(--sh-2);
+      overflow: hidden; min-height: calc(100vh - 100px);
     }
-    * { box-sizing: border-box; }
-    body {
-      margin: 0;
-      min-height: 100vh;
-      font-family: system-ui, -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif;
-      background: radial-gradient(circle at top, #1e293b 0, #020617 45%, #000 100%);
-      color: var(--text-main);
-      padding: 16px;
+    .sidebar {
+      background: var(--surface-2); border-right: 1px solid var(--border);
+      padding: 14px 10px; display: flex; flex-direction: column; gap: 3px;
     }
-    .shell {
-      max-width: 1200px;
-      margin: 0 auto;
+    .s-brand { display: flex; align-items: center; gap: 9px; padding: 4px 8px 14px; font-size: 13.5px; font-weight: 600; }
+    .nav-item {
+      display: flex; align-items: center; gap: 9px;
+      height: 32px; padding: 0 9px; border-radius: var(--r-xs);
+      font-size: 13px; font-weight: 500; color: var(--text-2);
+      cursor: pointer; border: 1px solid transparent;
     }
-    .header {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      gap: 8px;
-      flex-wrap: wrap;
-      margin-bottom: 12px;
-    }
-    .title {
-      font-size: 20px;
-      font-weight: 600;
-      display: flex;
-      align-items: center;
-      gap: 8px;
-    }
-    .title-pill {
-      padding: 2px 8px;
-      border-radius: 999px;
-      background: linear-gradient(135deg, rgba(56,189,248,0.2), rgba(59,130,246,0.15));
-      font-size: 11px;
-      text-transform: uppercase;
-      letter-spacing: 0.14em;
-      color: var(--accent);
-    }
-    .subtitle {
-      font-size: 13px;
-      color: var(--text-soft);
-    }
-    .card {
-      background: radial-gradient(circle at top left, rgba(56,189,248,0.18), transparent 55%),
-                  radial-gradient(circle at bottom, rgba(15,23,42,0.9), #020617 65%);
-      border-radius: var(--radius-lg);
-      border: 1px solid rgba(148, 163, 184, 0.22);
-      padding: 14px 14px 12px;
-      box-shadow:
-        0 24px 60px rgba(15,23,42,0.9),
-        0 0 0 1px rgba(15,23,42,0.9) inset;
-      margin-bottom: 12px;
-    }
-    .row {
-      display: flex;
-      gap: 12px;
-      flex-wrap: wrap;
-      align-items: center;
-      margin-bottom: 6px;
-    }
-    .input, select {
-      border-radius: 999px;
-      border: 1px solid rgba(51, 65, 85, 0.85);
-      background: rgba(15, 23, 42, 0.95);
-      color: var(--text-main);
-      font-size: 12px;
-      padding: 6px 10px;
-      outline: none;
-      min-width: 0;
-    }
-    .input:focus, select:focus {
-      border-color: rgba(56, 189, 248, 0.9);
-      box-shadow:
-        0 0 0 1px rgba(15,23,42,0.95) inset,
-        0 0 0 1px rgba(56,189,248,0.75),
-        0 16px 30px rgba(15,23,42,0.95);
-    }
-    .btn {
-      border-radius: 999px;
-      border: 1px solid rgba(148,163,184,0.8);
-      background: rgba(15,23,42,0.98);
-      color: #e5e7eb;
-      font-size: 12px;
-      padding: 6px 12px;
-      cursor: pointer;
-      display: inline-flex;
-      align-items: center;
-      gap: 6px;
-      letter-spacing: 0.04em;
-      text-transform: uppercase;
-      font-weight: 500;
-    }
-    .btn-primary {
-      border-color: transparent;
-      background: linear-gradient(135deg, #38bdf8, #4f46e5);
-      color: #0b1120;
-    }
-    .btn-danger {
-      border-color: rgba(248,113,113,0.8);
-      background: rgba(127,29,29,0.95);
-      color: #fee2e2;
-    }
-    .btn-ghost {
-      border-style: dashed;
-      border-color: rgba(148,163,184,0.65);
-      background: rgba(15,23,42,0.9);
-      color: var(--text-soft);
-    }
-    .status-text {
-      font-size: 12px;
-      color: var(--text-soft);
-    }
-    .status-dot {
-      width: 8px;
-      height: 8px;
-      border-radius: 50%;
-      display: inline-block;
-      margin-right: 6px;
-      background: #6b7280;
-    }
-    .status-dot.ok {
-      background: #22c55e;
-      box-shadow: 0 0 0 4px rgba(34,197,94,0.4);
-    }
-    .status-dot.bad {
-      background: #f97373;
-      box-shadow: 0 0 0 4px rgba(248,113,113,0.4);
-    }
-    .layout {
-      display: grid;
-      grid-template-columns: minmax(0, 2fr) minmax(0, 1.4fr);
-      gap: 12px;
-    }
-    @media (max-width: 900px) {
-      .layout { grid-template-columns: minmax(0, 1fr); }
-    }
-    table {
-      width: 100%;
-      border-collapse: collapse;
-      font-size: 12px;
-    }
-    th, td {
-      padding: 6px 8px;
-      border-bottom: 1px solid rgba(30,41,59,0.9);
-      text-align: left;
-    }
-    th {
-      font-weight: 500;
-      color: #cbd5f5;
-      background: rgba(15,23,42,0.9);
-      position: sticky;
-      top: 0;
-      z-index: 1;
-    }
-    tbody tr:hover {
-      background: rgba(15,23,42,0.75);
-    }
-    .tag {
-      display: inline-flex;
-      align-items: center;
-      padding: 2px 6px;
-      border-radius: 999px;
-      border: 1px solid rgba(148,163,184,0.6);
-      font-size: 11px;
-    }
-    .tag-on {
-      border-color: rgba(34,197,94,0.8);
-      color: #bbf7d0;
-    }
-    .tag-off {
-      border-color: rgba(148,163,184,0.9);
-      color: #e5e7eb;
-    }
-    .scroll {
-      max-height: 420px;
-      overflow: auto;
-    }
-    .field-col {
-      display: flex;
-      flex-direction: column;
-      gap: 4px;
-      font-size: 12px;
-      margin-bottom: 8px;
-    }
-    .label {
-      color: var(--text-soft);
-      font-size: 12px;
-    }
-    textarea {
-      width: 100%;
-      min-height: 120px;
-      border-radius: 10px;
-      border: 1px solid rgba(51, 65, 85, 0.85);
-      background: rgba(15, 23, 42, 0.95);
-      color: var(--text-main);
-      font-size: 12px;
-      padding: 6px 8px;
-      resize: vertical;
-    }
-    .log-item {
-      border-bottom: 1px dashed rgba(30,41,59,0.9);
-      padding: 6px 0;
-      font-size: 12px;
-    }
-    .log-time {
-      color: var(--text-soft);
-      margin-bottom: 2px;
-    }
-    .log-task {
-      color: #e5e7eb;
-      margin-bottom: 2px;
-    }
-    .log-status {
-      font-size: 11px;
-      color: var(--success);
-      margin-bottom: 2px;
-    }
-    .log-status.error { color: var(--danger); }
-    .log-message {
-      white-space: pre-wrap;
-      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
-      color: #e5e7eb;
-    }
-    /* 管理员登录 / 初始化遮罩 */
+    .nav-item:hover { background: var(--muted); color: var(--text); }
+    .nav-item.active { background: var(--surface); color: var(--text); font-weight: 590; border-color: var(--border); box-shadow: var(--sh-1); }
+    .nav-item .count { margin-left: auto; font-size: 11.5px; color: var(--text-3); font-variant-numeric: tabular-nums; }
+    .side-foot { margin-top: auto; border-top: 1px solid var(--border); padding: 12px 8px 2px; display: flex; align-items: center; gap: 8px; }
+
+    .admin-main { display: flex; flex-direction: column; min-width: 0; }
+    .admin-head { display: flex; align-items: center; gap: 8px; padding: 12px 18px; border-bottom: 1px solid var(--border); flex-wrap: wrap; }
+    .admin-head .input, .admin-head .btn, .admin-head select { height: 32px; }
+    .admin-head .input { width: 156px; }
+    .admin-head select { width: 118px; }
+
+    .metric-strip { display: grid; grid-template-columns: repeat(3, 1fr); background: var(--surface-2); border-bottom: 1px solid var(--border); }
+    .metric { padding: 11px 18px; border-right: 1px solid var(--border); }
+    .metric:last-child { border-right: 0; }
+    .metric .k { font-size: 11.5px; color: var(--text-3); font-weight: 500; }
+    .metric .v { font-size: 19px; font-weight: 620; letter-spacing: -0.03em; margin-top: 2px; font-variant-numeric: tabular-nums; }
+
+    .admin-body { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 0; flex: 1; min-height: 0; }
+    .table-pane { min-width: 0; padding: 6px 18px 18px; overflow: auto; }
+    .detail-pane { border-left: 1px solid var(--border); background: var(--surface); padding: 16px; display: flex; flex-direction: column; gap: 14px; overflow: auto; }
+    .detail-title { font-size: 13.5px; font-weight: 590; }
+    .detail-sub { font-size: 12px; color: var(--text-3); margin-top: 2px; }
+    .detail-actions { display: flex; gap: 8px; justify-content: flex-end; }
+    .log-box { border: 1px solid var(--border); border-radius: var(--r-md); background: var(--surface-2); max-height: 260px; overflow: auto; }
+
     .auth-mask {
-      position: fixed;
-      inset: 0;
-      display: none;
-      align-items: center;
-      justify-content: center;
-      background: rgba(2, 6, 23, 0.88);
-      backdrop-filter: blur(4px);
-      z-index: 50;
-      padding: 16px;
+      position: fixed; inset: 0; z-index: 50;
+      display: grid; place-items: center;
+      background: color-mix(in srgb, var(--bg) 72%, transparent);
+      backdrop-filter: blur(10px) saturate(140%);
     }
-    .auth-mask.show { display: flex; }
+    .auth-mask[hidden] { display: none; }
     .auth-card {
-      width: min(420px, 100%);
-      background: rgba(15, 23, 42, 0.98);
-      border: 1px solid rgba(51, 65, 85, 0.9);
-      border-radius: var(--radius-lg);
-      padding: 18px;
-      display: flex;
-      flex-direction: column;
-      gap: 10px;
+      width: 360px; max-width: calc(100vw - 32px);
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: var(--r-xl); box-shadow: 0 24px 60px -18px rgba(16, 24, 40, .35);
+      padding: 24px;
     }
-    .auth-card h2 { font-size: 16px; margin: 0; }
-    .auth-card p { font-size: 12px; color: var(--text-soft); margin: 0; line-height: 1.6; }
-    .auth-error { color: var(--danger); font-size: 12px; min-height: 16px; }
+    .auth-card h2 { margin: 0 0 6px; font-size: 16px; font-weight: 620; letter-spacing: -0.02em; }
+    .auth-card p { margin: 0 0 14px; font-size: 12.5px; color: var(--text-3); line-height: 1.6; }
+    .auth-card .field-col + .field-col { margin-top: 12px; }
+    .auth-error { color: var(--danger); font-size: 12.5px; min-height: 18px; }
+    #editWxKey, #editQqKey { flex: 1 1 0; width: 0; }
+    @media (max-width: 1080px) {
+      .admin-shell { grid-template-columns: 1fr; }
+      .sidebar { flex-direction: row; align-items: center; overflow-x: auto; border-right: 0; border-bottom: 1px solid var(--border); }
+      .s-brand { padding: 4px 8px; }
+      .side-foot { margin: 0 0 0 auto; border: 0; padding: 0; }
+      .admin-body { grid-template-columns: 1fr; }
+      .detail-pane { border-left: 0; border-top: 1px solid var(--border); }
+    }
   </style>
 </head>
 <body>
-  <div class="shell">
-    <div class="header">
+  <header class="topbar">
+    <div class="brand">
+      <img class="logo-mark" src="/static/logo.png" alt="" width="24" height="24" aria-hidden="true" />
       <div>
-        <div class="title">
-          <span class="title-pill">Admin</span>
-          <span>签到任务后台管理</span>
-        </div>
-        <div class="subtitle">用于查看、筛选、启用/禁用和删除签到任务，并浏览执行日志。</div>
+        <div class="brand-title">签到任务后台管理</div>
+        <div class="brand-sub">查看、筛选、启用或删除任务，并浏览执行日志</div>
       </div>
-      <div class="status-text">
+    </div>
+    <div class="topbar-right">
+      <span class="status-text">
         <span id="healthDot" class="status-dot"></span>
         <span id="healthText">后端状态：未知</span>
-      </div>
+      </span>
+      <a class="btn btn-sm" href="/">返回用户端</a>
+      <button class="icon-btn" type="button" data-theme-toggle aria-label="切换明暗">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
+          <circle cx="12" cy="12" r="4.2" />
+          <path d="M12 2.6v2.2M12 19.2v2.2M2.6 12h2.2M19.2 12h2.2M5.4 5.4l1.6 1.6M17 17l1.6 1.6M18.6 5.4 17 7M7 17l-1.6 1.6" />
+        </svg>
+      </button>
     </div>
+  </header>
 
+  <main class="admin-page">
+    <div class="admin-shell">
+      <aside class="sidebar">
+        <div class="s-brand">
+          <img class="logo-mark" src="/static/logo.png" alt="" width="22" height="22" aria-hidden="true" />
+          自动签到
+        </div>
+        <div class="nav-item active" role="button" tabindex="0">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="4" width="18" height="16" rx="2.5"/><path d="M8 4v16M3 10h18"/></svg>
+          任务
+          <span class="count" id="navCount">0</span>
+        </div>
+        <div class="nav-item" id="navLogs" role="button" tabindex="0" onclick="document.getElementById(&quot;logList&quot;).scrollIntoView({behavior:&quot;smooth&quot;,block:&quot;center&quot;})">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 6h16M4 12h16M4 18h10" stroke-linecap="round"/></svg>
+          执行日志
+        </div>
+        <div class="nav-item" role="button" tabindex="0" onclick="location.href='/'">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 5v14M5 12h14" stroke-linecap="round"/></svg>
+          新建任务
+        </div>
+        <div class="side-foot">
+          <span class="pill ok" id="adminStatePill"><span class="sdot"></span>已登录</span>
+        </div>
+      </aside>
 
+      <div class="admin-main">
+        <div class="admin-head">
+          <div class="search-row" style="display:flex;gap:8px;flex-wrap:wrap">
+            <input id="filterName" class="input" placeholder="搜索姓名" />
+            <input id="filterClass" class="input" placeholder="搜索班级" />
+            <select id="filterEnabled" class="input">
+              <option value="">全部状态</option>
+              <option value="1">仅启用</option>
+              <option value="0">仅禁用</option>
+            </select>
+          </div>
+          <span class="spacer"></span>
+          <button id="btnReloadTasks" class="btn btn-sm" type="button">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M20 11a8 8 0 1 0-2.3 6"/><path d="M20 4v7h-7"/></svg>
+            刷新列表
+          </button>
+        </div>
 
-    <div class="layout">
-      <div class="card">
-        <div class="row" style="margin-bottom:8px;">
-          <input id="filterName" class="input" placeholder="按姓名模糊搜索" />
-          <input id="filterClass" class="input" placeholder="按班级模糊搜索" />
-          <select id="filterEnabled">
-            <option value="">全部状态</option>
-            <option value="1">仅启用</option>
-            <option value="0">仅禁用</option>
-          </select>
-          <button id="btnReloadTasks" class="btn btn-ghost">刷新列表</button>
+        <div class="metric-strip">
+          <div class="metric"><div class="k">任务总数</div><div class="v" id="metricTotal">0</div></div>
+          <div class="metric"><div class="k">已启用</div><div class="v" id="metricOn" style="color:var(--success)">0</div></div>
+          <div class="metric"><div class="k">已禁用</div><div class="v" id="metricOff" style="color:var(--text-2)">0</div></div>
         </div>
-        <div class="scroll">
-          <table>
-            <thead>
-              <tr>
-                <th>ID</th>
-                <th>姓名 / 班级</th>
-                <th>坐标</th>
-                <th>时间点</th>
-                <th>启用</th>
-                <th>操作</th>
-              </tr>
-            </thead>
-            <tbody id="taskTableBody">
-              <tr><td colspan="6">正在加载任务列表...</td></tr>
-            </tbody>
-          </table>
-        </div>
-      </div>
 
-      <div class="card">
-        <div class="field-col">
-          <div class="label">当前选中任务：<span id="currentTaskLabel">无</span></div>
-        </div>
-        <div class="field-col">
-          <div class="label">坐标（lat lng）</div>
-          <input id="editCoord" class="input" placeholder="例如：26.000000 119.000000" />
-        </div>
-        <div class="field-col">
-          <div class="label">微信通知 Key / QQ 通知 Key</div>
-          <div class="row">
-            <input id="editWxKey" class="input" placeholder="WXKey" />
-            <input id="editQqKey" class="input" placeholder="QmsgKEY" />
+        <div class="admin-body">
+          <div class="table-pane">
+            <div class="scroll">
+              <table>
+                <thead>
+                  <tr>
+                    <th style="width:56px">ID</th>
+                    <th>姓名 / 班级</th>
+                    <th>坐标</th>
+                    <th>时间点</th>
+                    <th style="width:72px">状态</th>
+                    <th style="width:74px"></th>
+                  </tr>
+                </thead>
+                <tbody id="taskTableBody">
+                  <tr><td colspan="6" class="hint-text">正在加载任务列表…</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <div class="detail-pane" id="detailPane">
+            <div>
+              <div class="detail-title" id="currentTaskLabel">未选择任务</div>
+              <div class="detail-sub">在左侧列表点「选择」后即可编辑</div>
+            </div>
+
+            <div class="field-col">
+              <label class="label" for="editCoord">坐标（纬度 经度）</label>
+              <input id="editCoord" class="input mono" placeholder="例如 39.908700 116.397500" />
+            </div>
+
+            <div class="field-col">
+              <div class="label">通知 Key</div>
+              <div class="field-row">
+                <input id="editWxKey" class="input mono" placeholder="WXKey" style="flex:1" />
+                <input id="editQqKey" class="input mono" placeholder="QmsgKEY" style="flex:1" />
+              </div>
+            </div>
+
+            <div class="field-col">
+              <label class="label" for="editTimes">执行时间点</label>
+              <input id="editTimes" class="input mono" placeholder="07:30:00,12:00:00" />
+              <div class="hint-text">多个时间点用英文逗号分隔</div>
+            </div>
+
+            <div class="field-col">
+              <label class="label" for="editEnabled">任务状态</label>
+              <select id="editEnabled" class="input">
+                <option value="1">启用</option>
+                <option value="0">禁用</option>
+              </select>
+            </div>
+
+            <div class="detail-actions">
+              <button id="btnSaveTask" class="btn btn-primary btn-sm" type="button">保存修改</button>
+              <button id="btnDeleteTask" class="btn btn-danger btn-sm" type="button">删除任务</button>
+            </div>
+
+            <hr class="divider" style="margin:2px 0" />
+
+            <div>
+              <div class="row-between">
+                <div class="detail-title">最近执行日志</div>
+                <button id="btnReloadLogs" class="btn btn-sm btn-ghost" type="button">刷新日志</button>
+              </div>
+              <div class="detail-sub">最多显示 50 条</div>
+            </div>
+            <div id="logList" class="log-box">
+              <div class="hint-text" style="padding:12px">请选择左侧任务后，再点「刷新日志」。</div>
+            </div>
           </div>
         </div>
-        <div class="field-col">
-          <div class="label">执行时间点（用英文逗号分隔，例如 07:30:00,12:00:00）</div>
-          <input id="editTimes" class="input" placeholder="07:30:00,12:00:00" />
-        </div>
-        <div class="field-col">
-          <div class="label">任务状态</div>
-          <select id="editEnabled" class="input">
-            <option value="1">启用</option>
-            <option value="0">禁用</option>
-          </select>
-        </div>
-        <div class="row" style="justify-content:flex-end;margin-top:4px;">
-          <button id="btnSaveTask" class="btn btn-primary">保存修改</button>
-          <button id="btnDeleteTask" class="btn btn-danger">删除任务</button>
-        </div>
-        <hr style="border:none;border-top:1px solid rgba(30,41,59,0.9);margin:10px 0;">
-        <div class="field-col">
-          <div class="label">最近执行日志（最多 50 条）</div>
-          <div id="logList" class="scroll" style="max-height:220px;">
-            <div class="status-text">请选择左侧任务后，再点击「刷新日志」。</div>
-          </div>
-        </div>
-        <div class="row" style="justify-content:flex-end;">
-          <button id="btnReloadLogs" class="btn btn-ghost">刷新日志</button>
-        </div>
       </div>
     </div>
-  </div>
+  </main>
 
   <div id="authMask" class="auth-mask">
     <div class="auth-card">
       <h2 id="authTitle">管理员登录</h2>
       <p id="authHint"></p>
-      <input id="authKey" class="input" type="password" placeholder="管理员 Key" autocomplete="current-password" />
-      <div id="authError" class="auth-error"></div>
-      <div class="row" style="justify-content:flex-end;">
-        <button id="btnAuthSubmit" class="btn btn-primary">登录</button>
+      <div class="field-col">
+        <label class="label" for="authKey">管理员 Key</label>
+        <input id="authKey" class="input" type="password" placeholder="请输入管理员 Key" autocomplete="current-password" />
+      </div>
+      <div class="auth-error" id="authError"></div>
+      <div class="row" style="justify-content:flex-end;margin-top:6px">
+        <button id="btnAuthSubmit" class="btn btn-primary" type="button">登录</button>
       </div>
     </div>
   </div>
@@ -499,6 +373,19 @@
       }
     }
 
+    function updateMetrics() {
+      const total = tasksCache.length;
+      const enabled = tasksCache.filter((t) => t.enabled).length;
+      const setText = (id, value) => {
+        const el = document.getElementById(id);
+        if (el) el.textContent = String(value);
+      };
+      setText("metricTotal", total);
+      setText("metricOn", enabled);
+      setText("metricOff", total - enabled);
+      setText("navCount", total);
+    }
+
     function renderTasks() {
       taskTableBody.innerHTML = "";
       if (!tasksCache.length) {
@@ -540,8 +427,10 @@
         tr.appendChild(tdTimes);
         tr.appendChild(tdEnabled);
         tr.appendChild(tdOps);
+        if (task.id === currentTaskId) tr.classList.add("is-selected");
         taskTableBody.appendChild(tr);
       });
+      updateMetrics();
     }
 
     async function loadTasks() {
@@ -565,9 +454,12 @@
 
     function selectTask(id) {
       currentTaskId = id;
+      taskTableBody.querySelectorAll("tr").forEach((row) => {
+        row.classList.toggle("is-selected", Number(row.dataset.id) === id);
+      });
       const t = tasksCache.find(x => x.id === id);
       if (!t) {
-        currentTaskLabel.textContent = "无";
+        currentTaskLabel.textContent = "未选择任务";
         return;
       }
       currentTaskLabel.textContent = `#${t.id} ${t.name} (${t.class_id || "无班级信息"})`;
@@ -645,7 +537,7 @@
         }
         alert("删除成功。");
         currentTaskId = null;
-        currentTaskLabel.textContent = "无";
+        currentTaskLabel.textContent = "未选择任务";
         editCoord.value = "";
         editWxKey.value = "";
         editQqKey.value = "";

@@ -2,736 +2,262 @@
 <html lang="zh-CN">
 <head>
   <meta charset="UTF-8" />
-  <title>Web 自动签到配置</title>
+  <title>班级魔方自动签到</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link rel="icon" type="image/png" href="/static/logo.png" />
+  <link rel="stylesheet" href="/static/theme.css" />
+  <script src="/static/theme.js" defer></script>
   <style>
-    :root {
-      --bg: #0f172a;
-      --card-bg: #020617;
-      --accent: #38bdf8;
-      --accent-soft: rgba(56, 189, 248, 0.15);
-      --border-subtle: #1e293b;
-      --text-main: #e5e7eb;
-      --text-soft: #9ca3af;
-      --danger: #f97373;
-      --success: #22c55e;
-      --radius-lg: 14px;
-    }
-    * {
-      box-sizing: border-box;
-    }
-    body {
-      margin: 0;
-      min-height: 100vh;
-      font-family: system-ui, -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif;
-      background: radial-gradient(circle at top, #1e293b 0, #020617 45%, #000 100%);
-      color: var(--text-main);
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      padding: 16px;
-    }
-    .shell {
-      width: 100%;
-      max-width: 1080px;
-    }
-
-    /* 在桌面端整体放大约 30% */
-    @media (min-width: 00px) {
-      body {
-        padding: 24px;
-      }
-      .shell {
-        max-width: 1400px;
-        transform: scale(1);
-        transform-origin: top center;
-      }
-    }
-    .header {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      margin-bottom: 16px;
-      gap: 8px;
-      flex-wrap: wrap;
-    }
-    .title {
-      font-size: 20px;
-      font-weight: 600;
-      letter-spacing: 0.03em;
-      display: flex;
-      align-items: center;
-      gap: 8px;
-    }
-    .title-pill {
-      padding: 2px 8px;
-      border-radius: 999px;
-      background: linear-gradient(135deg, rgba(56,189,248,0.2), rgba(59,130,246,0.15));
-      font-size: 11px;
-      text-transform: uppercase;
-      letter-spacing: 0.14em;
-      color: var(--accent);
-    }
-    .subtitle {
-      font-size: 13px;
-      color: var(--text-soft);
-    }
-    .layout {
-      display: grid;
-      /* 左侧缩窄一些，约占整体 30% 左右 */
-      grid-template-columns: minmax(0, 0.8fr) minmax(0, 1.2fr);
-      gap: 16px;
-    }
-    @media (max-width: 900px) {
-      .layout {
-        grid-template-columns: minmax(0, 1fr);
-      }
-    }
-    .card {
-      background: radial-gradient(circle at top left, rgba(56,189,248,0.18), transparent 55%),
-                  radial-gradient(circle at bottom, rgba(15,23,42,0.9), #020617 65%);
-      border-radius: var(--radius-lg);
-      border: 1px solid rgba(148, 163, 184, 0.22);
-      padding: 18px 18px 16px;
-      box-shadow:
-        0 24px 60px rgba(15,23,42,0.9),
-        0 0 0 1px rgba(15,23,42,0.9) inset;
-    }
-    /* 左侧主卡片：更紧凑一些 */
-    .card-main {
-      padding: 14px 14px 12px;
-    }
-    .card-secondary {
-      background: radial-gradient(circle at top right, rgba(56,189,248,0.16), transparent 55%),
-                  radial-gradient(circle at bottom, #020617, #020617 65%);
-      border-radius: var(--radius-lg);
-      border: 1px solid var(--border-subtle);
-      padding: 16px 16px 14px;
-      box-shadow:
-        0 18px 50px rgba(15,23,42,0.88),
-        0 0 0 1px rgba(15,23,42,1) inset;
-    }
-    .section-header {
-      display: flex;
-      align-items: baseline;
-      justify-content: space-between;
-      gap: 6px;
-      margin-bottom: 10px;
-    }
-    .section-title {
-      font-size: 14px;
-      font-weight: 550;
-      letter-spacing: 0.08em;
-      text-transform: uppercase;
-      color: #cbd5f5;
-      display: flex;
-      align-items: center;
-      gap: 6px;
-    }
-    .section-title-dot {
-      width: 6px;
-      height: 6px;
-      border-radius: 50%;
-      background: var(--accent);
-      box-shadow: 0 0 0 6px rgba(56,189,248,0.24);
-    }
-    .section-caption {
-      font-size: 12px;
-      color: var(--text-soft);
-    }
-    .stepper {
-      display: flex;
-      gap: 10px;
-      margin-bottom: 8px;
-      flex-wrap: wrap;
-    }
-    .step {
-      flex: 1;
-      min-width: 0;
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      font-size: 12px;
-      color: var(--text-soft);
-      opacity: 0.7;
-      transition: opacity 0.18s ease;
-    }
-    .step.active {
-      opacity: 1;
-      color: var(--accent);
-    }
-    .step-badge {
-      width: 18px;
-      height: 18px;
-      border-radius: 999px;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      font-size: 11px;
-      background: rgba(15,23,42,0.9);
-      border: 1px solid rgba(148,163,184,0.65);
-    }
-    .step.active .step-badge {
-      border-color: rgba(56,189,248,0.9);
-      background: radial-gradient(circle at top, rgba(56,189,248,0.35), rgba(15,23,42,0.85));
-      color: #e0f2fe;
-    }
-    .step-text-main {
-      font-weight: 500;
-    }
-    .step-text-sub {
-      font-size: 11px;
-    }
-    .qr-wrapper {
-      display: flex;
-      align-items: center;
-      gap: 14px;
-      flex-wrap: wrap;
-      /* 让二维码整体稍微下移一点 */
-      margin-top: 70px;
+    .time-input { min-width: 138px; }
+    .qr-zone {
+      display: grid; place-items: center;
+      padding: 18px;
+      border: 1px dashed var(--border-strong);
+      border-radius: var(--r-md);
+      background: var(--surface-2);
     }
     .qr-box {
-      width: 260px;
-      height: 260px;
-      border-radius: 16px;
-      background: radial-gradient(circle at 20% 10%, rgba(56,189,248,0.5), transparent 55%),
-                  radial-gradient(circle at 85% 85%, rgba(59,130,246,0.4), transparent 60%),
-                  #020617;
-      border: none;
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      justify-content: center;
-      gap: 6px;
-      position: relative;
+      width: 196px; height: 196px;
+      display: grid; place-items: center;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--r-md);
       overflow: hidden;
     }
-    .qr-box::before {
-      content: "";
-      position: absolute;
-      inset: -80%;
-      background: conic-gradient(from 200deg, rgba(56,189,248,0.35), transparent 40%, transparent 60%, rgba(56,189,248,0.45), rgba(59,130,246,0.35), transparent);
-      opacity: 0.6;
-      filter: blur(26px);
-      mix-blend-mode: screen;
-    }
-    .qr-inner {
-      position: relative;
-      z-index: 1;
-      width: 88%;
-      height: 88%;
-      padding: 4px;
-      border-radius: 12px;
-      background: transparent;
-      box-shadow: none;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-    }
-    #qrImage {
-      max-width: 100%;
-      max-height: 100%;
-      display: block;
-      border-radius: 8px;
-    }
+    .qr-box img { width: 100%; height: 100%; object-fit: contain; }
     .qr-placeholder {
-      font-size: 12px;
-      text-align: center;
-      color: var(--text-soft);
-      padding: 0 8px;
+      font-size: 12.5px; color: var(--text-3);
+      text-align: center; padding: 16px; line-height: 1.6;
     }
-    .meta {
-      flex: 1;
-      min-width: 0;
-    }
+    .btn-row { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; }
     .meta-row {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      margin-bottom: 6px;
-      font-size: 12px;
+      display: flex; align-items: center; justify-content: space-between; gap: 10px;
+      margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--border);
+      font-size: 12.5px; color: var(--text-3);
     }
-    .pill {
-      padding: 3px 10px;
-      border-radius: 999px;
-      font-size: 11px;
-      border: 1px solid rgba(148, 163, 184, 0.5);
-      background: rgba(15, 23, 42, 0.8);
-      color: #e5e7eb;
-      display: inline-flex;
-      align-items: center;
-      gap: 6px;
-    }
-    .dot-online {
-      width: 7px;
-      height: 7px;
-      border-radius: 50%;
-      background: #22c55e;
-      box-shadow: 0 0 0 4px rgba(34,197,94,0.4);
-    }
-    .dot-offline {
-      width: 7px;
-      height: 7px;
-      border-radius: 50%;
-      background: #f97373;
-      box-shadow: 0 0 0 4px rgba(248,113,113,0.35);
-    }
-    .hint-text {
-      font-size: 12px;
-      color: var(--text-soft);
-    }
-    .hint-strong {
-      color: #e5e7eb;
-      font-weight: 500;
-    }
-    .field-grid {
-      display: grid;
-      grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-      gap: 10px 12px;
-      margin-bottom: 10px;
-    }
-    /* 单列布局：用于经纬度等需要占满整行的区域，避免右侧大片留白 */
-    .field-grid-single {
-      grid-template-columns: minmax(0, 1fr);
-    }
-    @media (max-width: 700px) {
-      .field-grid {
-        grid-template-columns: minmax(0, 1fr);
-      }
-    }
-    .field {
-      display: flex;
-      flex-direction: column;
-      gap: 4px;
-      font-size: 12px;
-    }
-    .field-row {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-    }
-    .label {
-      font-size: 12px;
-      color: var(--text-soft);
-      display: flex;
-      align-items: center;
-      gap: 6px;
-    }
-    .label-tag {
-      padding: 1px 6px;
-      border-radius: 6px;
-      font-size: 10px;
-      text-transform: uppercase;
-      letter-spacing: 0.12em;
-      border: 1px solid rgba(148, 163, 184, 0.6);
-      color: #cbd5f5;
-    }
-    .label-link {
-      margin-left: 4px;
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      width: 16px;
-      height: 16px;
-      border-radius: 999px;
-      border: 1px solid rgba(148,163,184,0.6);
-      color: #9ca3af;
-      font-size: 10px;
-      text-decoration: none;
-      transition: background 0.16s ease, border-color 0.16s ease, color 0.16s ease;
-    }
-    .label-link:hover {
-      border-color: rgba(56,189,248,0.85);
-      color: #e5e7eb;
-      background: rgba(15,23,42,0.9);
-    }
-    .input, .time-input {
-      width: 100%;
-      border-radius: 10px;
-      border: 1px solid rgba(51, 65, 85, 0.85);
-      background: rgba(15, 23, 42, 0.95);
-      color: var(--text-main);
-      font-size: 12px;
-      padding: 7px 9px;
-      outline: none;
-      transition: border-color 0.18s ease, box-shadow 0.18s ease, background 0.18s ease;
-    }
-    .input:focus, .time-input:focus {
-      border-color: rgba(56, 189, 248, 0.9);
-      box-shadow:
-        0 0 0 1px rgba(15,23,42,0.95) inset,
-        0 0 0 1px rgba(56,189,248,0.75),
-        0 16px 30px rgba(15,23,42,0.95);
-      background: rgba(15, 23, 42, 0.96);
-    }
-    /* 年份下拉单独放宽一点，避免年份被截断 */
-    .date-year-select {
-      min-width: 90px;
-      max-width: 110px;
-    }
-    /* 时间预设下拉宽度适中，方便点击 */
-    .time-preset-select {
-      max-width: 120px;
-      flex-shrink: 0;
-    }
-    .input[readonly] {
-      opacity: 0.8;
-      cursor: default;
-      background: rgba(15, 23, 42, 0.9);
-    }
-    .time-list {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 6px;
-      margin-top: 4px;
-    }
-    .time-pill {
-      border-radius: 999px;
-      padding: 3px 8px;
-      font-size: 11px;
-      border: 1px solid rgba(148,163,184,0.7);
-      background: rgba(15,23,42,0.9);
-      display: inline-flex;
-      align-items: center;
-      gap: 6px;
-    }
-    .time-pill button {
-      border: none;
-      padding: 0;
-      margin: 0;
-      width: 14px;
-      height: 14px;
-      border-radius: 999px;
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      font-size: 11px;
-      background: rgba(15,23,42,0.9);
-      color: rgba(248,113,113,0.9);
-      cursor: pointer;
-    }
-    .time-pill button:hover {
-      background: rgba(30,64,175,0.85);
-    }
-    .btn-row {
-      display: flex;
-      justify-content: flex-end;
-      gap: 8px;
-      margin-top: 6px;
-    }
-    .btn {
-      border-radius: 999px;
-      border: 1px solid rgba(148,163,184,0.8);
-      background: rgba(15,23,42,0.98);
-      color: #e5e7eb;
-      font-size: 12px;
-      padding: 6px 12px;
-      cursor: pointer;
-      display: inline-flex;
-      align-items: center;
-      gap: 6px;
-      letter-spacing: 0.04em;
-      text-transform: uppercase;
-      font-weight: 500;
-      transition: background 0.18s ease, border-color 0.18s ease, transform 0.1s ease, box-shadow 0.18s ease;
-    }
-    .btn-primary {
-      border-color: transparent;
-      background: linear-gradient(135deg, #38bdf8, #4f46e5);
-      color: #0b1120;
-      box-shadow:
-        0 14px 35px rgba(56,189,248,0.5),
-        0 0 0 1px rgba(15,23,42,0.95) inset;
-    }
-    .btn-primary:hover {
-      box-shadow:
-        0 18px 45px rgba(56,189,248,0.65),
-        0 0 0 1px rgba(15,23,42,0.95) inset;
-      transform: translateY(-1px);
-    }
-    .btn:active {
-      transform: translateY(0);
-      box-shadow:
-        0 8px 20px rgba(15,23,42,0.9),
-        0 0 0 1px rgba(15,23,42,1) inset;
-    }
-    .btn-ghost {
-      border-style: dashed;
-      border-color: rgba(148,163,184,0.65);
-      background: rgba(15,23,42,0.9);
-      color: var(--text-soft);
-    }
-    .btn-ghost:hover {
-      border-color: rgba(148,163,184,1);
-      color: #e5e7eb;
-    }
-    .status-bar {
-      margin-top: 10px;
-      font-size: 12px;
-      display: flex;
-      align-items: center;
-      gap: 10px;
-      justify-content: space-between;
-      flex-wrap: wrap;
-    }
-    .status-text {
-      display: inline-flex;
-      align-items: center;
-      gap: 6px;
-    }
-    .status-dot {
-      width: 8px;
-      height: 8px;
-      border-radius: 50%;
-      background: #6b7280;
-    }
-    .status-dot.running {
-      background: #38bdf8;
-      box-shadow: 0 0 0 4px rgba(56,189,248,0.4);
-    }
-    .status-dot.success {
-      background: #22c55e;
-      box-shadow: 0 0 0 4px rgba(34,197,94,0.5);
-    }
-    .status-dot.error {
-      background: #f97373;
-      box-shadow: 0 0 0 4px rgba(248,113,113,0.45);
-    }
-    .status-label {
-      text-transform: uppercase;
-      font-size: 11px;
-      letter-spacing: 0.15em;
-      color: #9ca3af;
-    }
-    .status-message {
-      font-size: 12px;
-      color: var(--text-soft);
-    }
-    .status-message strong {
-      color: #e5e7eb;
-      font-weight: 500;
-    }
-    .badge {
-      padding: 2px 6px;
-      border-radius: 999px;
-      font-size: 11px;
-      border: 1px solid rgba(148,163,184,0.7);
-      background: rgba(15,23,42,0.9);
+    .meta-row .mono { color: var(--text-2); }
+    .hints { display: flex; flex-direction: column; gap: 10px; font-size: 12.5px; color: var(--text-2); line-height: 1.65; }
+    .hints b { font-weight: 590; color: var(--text); }
+    .hints > div { padding-left: 16px; text-indent: -16px; }
+    .topbar .pill { height: 26px; }
+    @media (max-width: 960px) {
+      .qr-box { width: 168px; height: 168px; }
     }
   </style>
 </head>
 <body>
-  <div class="shell">
-    <div class="header">
+  <header class="topbar">
+    <div class="brand">
+      <img class="logo-mark" src="/static/logo.png" alt="" width="24" height="24" aria-hidden="true" />
       <div>
-        <div class="title">
-          <span class="title-pill">Web Sign-in</span>
-          <span>班级魔方自动签到平台</span>
-        </div>
-        <div class="subtitle">扫码一次，配置到位，后端按时替你签到。</div>
+        <div class="brand-title">班级魔方自动签到</div>
+        <div class="brand-sub">扫码一次，之后每天按时间自动签到</div>
       </div>
-      <div class="badge">仅本地展示基础信息 · Cookie 始终只在后端</div>
     </div>
+    <div class="topbar-right">
+      <span class="pill">
+        <span id="onlineDot" class="dot-offline"></span>
+        <span id="onlineText">后端状态：未知</span>
+      </span>
+      <a class="btn btn-sm" href="/manage">管理端</a>
+      <button class="icon-btn" type="button" data-theme-toggle aria-label="切换明暗">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
+          <circle cx="12" cy="12" r="4.2" />
+          <path d="M12 2.6v2.2M12 19.2v2.2M2.6 12h2.2M19.2 12h2.2M5.4 5.4l1.6 1.6M17 17l1.6 1.6M18.6 5.4 17 7M7 17l-1.6 1.6" />
+        </svg>
+      </button>
+    </div>
+  </header>
 
-    <div class="layout">
-      <div class="card card-main">
-        <!-- 原左侧 Step Flow 流程已按需求移除 -->
-
-        <div class="qr-wrapper">
-          <div class="qr-box">
-            <div class="qr-inner">
-              <img id="qrImage" alt="登录二维码" style="display:none" />
-              <div class="qr-placeholder" id="qrPlaceholder">
-                点击右下角「生成二维码」按钮，<br />使用手机微信扫码登录教学平台。
-              </div>
+  <main class="page">
+    <div class="grid-2">
+      <!-- ========== 左：任务配置 ========== -->
+      <section class="stack">
+        <div class="card">
+          <div class="card-head">
+            <span class="icon-chip" aria-hidden="true">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+                <path d="M12 5v14M5 12h14" />
+              </svg>
+            </span>
+            <div>
+              <div class="card-title">新建签到任务</div>
+              <div class="card-sub">扫码成功后会自动填入姓名与班级，其余按需填写</div>
             </div>
           </div>
 
-          <div class="meta">
-            <div class="meta-row">
-              <span class="pill">
-                <span id="onlineDot" class="dot-offline"></span>
-                <span id="onlineText">后端状态：未知</span>
-              </span>
+          <div class="card-body">
+            <div class="field-grid">
+              <div class="field">
+                <label class="label" for="name">姓名</label>
+                <input id="name" class="input" type="text" readonly placeholder="扫码后自动识别" />
+              </div>
+              <div class="field">
+                <label class="label" for="classInfo">班级</label>
+                <input id="classInfo" class="input" type="text" readonly placeholder="扫码后自动识别" />
+              </div>
             </div>
-            <div>
-              <span class="pill">
-                <span>扫码会话</span>
-                <span id="tokenShort">未创建</span>
-              </span>
+
+            <div class="field-grid field-grid-single">
+              <div class="field">
+                <label class="label" for="coord">经纬度</label>
+                <div class="field-row">
+                  <input
+                    id="coord"
+                    class="input mono"
+                    type="text"
+                    style="flex:1;min-width:0"
+                    placeholder="例如 39.908700 116.397500"
+                  />
+                  <button class="btn" id="btnCoordPicker" type="button" style="flex:none">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+                      <path d="M12 21s7-6.1 7-11a7 7 0 1 0-14 0c0 4.9 7 11 7 11z" />
+                      <circle cx="12" cy="10" r="2.6" />
+                    </svg>
+                    坐标拾取
+                  </button>
+                </div>
+                <div class="hint-text">可直接粘贴地图上复制的整段坐标，后端会自动解析分隔符。</div>
+              </div>
             </div>
-            <div class="hint-text" id="hintText">
-              <span class="hint-strong">说明：</span>
+
+            <div class="field-grid">
+              <div class="field">
+                <div class="label">
+                  <label for="wxKey">微信通知 Key（可选）</label>
+                  <a class="label-link" href="https://sct.ftqq.com/" target="_blank" rel="noopener noreferrer" title="前往 Server 酱官网">↗</a>
+                </div>
+                <input id="wxKey" class="input" type="text" placeholder="Server 酱 SendKey" />
+              </div>
+              <div class="field">
+                <div class="label">
+                  <label for="qqKey">QQ 通知 Key（可选）</label>
+                  <a class="label-link" href="https://qmsg.zendee.cn/" target="_blank" rel="noopener noreferrer" title="前往 Qmsg 酱官网">↗</a>
+                </div>
+                <input id="qqKey" class="input" type="text" placeholder="Qmsg 酱 Key" />
+              </div>
+            </div>
+
+            <div class="field-grid field-grid-single">
+              <div class="field">
+                <label class="label" for="timeInput">每天执行时间</label>
+                <div class="field-row">
+                  <input id="timeInput" class="input time-input" type="time" step="1" />
+                  <select id="timePreset" class="input time-preset-select">
+                    <option value="">常用时间</option>
+                    <option value="07:10:00">07:10:00</option>
+                    <option value="07:30:00">07:30:00</option>
+                    <option value="08:00:00">08:00:00</option>
+                    <option value="12:00:00">12:00:00</option>
+                    <option value="18:00:00">18:00:00</option>
+                    <option value="22:00:00">22:00:00</option>
+                  </select>
+                  <button class="btn" id="btnAddTime" type="button" style="flex:none">添加时间</button>
+                </div>
+                <div id="timeList" class="time-list"></div>
+              </div>
+            </div>
+
+            <div class="field-grid field-grid-single">
+              <div class="field">
+                <div class="label" id="dateRangeLabel">日期范围（可选）</div>
+                <div class="field-row">
+                  <div class="field-row" style="gap:6px;flex-wrap:nowrap">
+                    <select id="dateStartYear" class="input date-year-select"></select>
+                    <select id="dateStartMonth" class="input"></select>
+                    <select id="dateStartDay" class="input"></select>
+                  </div>
+                  <span class="hint-text">~</span>
+                  <div class="field-row" style="gap:6px;flex-wrap:nowrap">
+                    <select id="dateEndYear" class="input date-year-select"></select>
+                    <select id="dateEndMonth" class="input"></select>
+                    <select id="dateEndDay" class="input"></select>
+                  </div>
+                </div>
+                <div class="hint-text">不填则每天都执行；只填开始日期表示长期执行。</div>
+              </div>
+            </div>
+
+            <hr class="divider" />
+
+            <div class="row-between">
+              <div class="status-text">
+                <span id="taskStatusDot" class="status-dot"></span>
+                <span id="taskStatusMessage" role="status" aria-live="polite">等待扫码登录完成后再提交任务。</span>
+              </div>
+              <div class="row">
+                <button class="btn" id="btnViewLogs" type="button">查看日志</button>
+                <button class="btn btn-primary" id="btnSubmitTask" type="button">提交签到任务</button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="card" id="taskLogPanel" style="display:none">
+          <div class="card-head">
+            <div class="card-title">最近执行日志</div>
+            <span class="spacer"></span>
+            <button class="btn btn-sm btn-ghost" id="btnHideLogs" type="button">收起</button>
+          </div>
+          <div id="taskLogList" class="log-list" style="padding-top:10px">
+            <div class="hint-text" style="padding:0 18px 12px">暂无日志，请等待任务执行后再查看。</div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ========== 右：扫码登录 ========== -->
+      <aside class="stack">
+        <div class="card">
+          <div class="card-head">
+            <div class="card-title">微信扫码登录</div>
+            <span class="spacer"></span>
+            <span class="pill" id="qrSessionPill">
+              <span>会话</span>
+              <span id="tokenShort" class="mono">未创建</span>
+            </span>
+          </div>
+          <div class="card-body">
+            <div class="qr-zone">
+              <div class="qr-box">
+                <img id="qrImage" alt="登录二维码" style="display:none" />
+                <div class="qr-placeholder" id="qrPlaceholder">
+                  点击「生成二维码」<br />用微信扫码登录教学平台
+                </div>
+              </div>
+            </div>
+
+            <div id="hintText" class="hint-text" style="margin-top:12px" role="status" aria-live="polite">
               每次点击「生成二维码」都会启动一轮新的扫码会话（约 2 分钟内有效）。
             </div>
-            <div class="btn-row" style="margin-top:10px">
-              <button class="btn btn-ghost" id="btnHealth">
-                <span>检测服务</span>
-              </button>
-              <button class="btn btn-primary" id="btnCreateQr">
-                <span>生成二维码</span>
-              </button>
+
+            <div class="btn-row">
+              <button class="btn btn-sm" id="btnHealth" type="button">检测服务</button>
+              <button class="btn btn-sm btn-primary" id="btnCreateQr" type="button">生成二维码</button>
             </div>
+
+            <div id="qrCountdown" class="hint-text" style="display:none;margin-top:10px">
+              <span id="qrCountdownText"></span>
+            </div>
+
             <div class="status-bar">
-              <div class="status-text">
-                <span id="qrStatusDot" class="status-dot"></span>
-                <span class="status-label">QR Session</span>
-              </div>
-              <div class="status-message" id="qrStatusMessage">尚未开始扫码。</div>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <div class="card-secondary">
-        <div class="section-header">
-          <div class="section-title">
-            <span class="section-title-dot"></span>
-            <span>Task Config</span>
-          </div>
-          <div class="section-caption">
-            扫码成功后会自动填充账号信息。
-          </div>
-        </div>
-
-        <div class="field-grid">
-          <div class="field">
-            <div class="label">
-              <span class="label-tag">Account</span>
-              <span>姓名</span>
-            </div>
-            <input id="name" class="input" type="text" readonly placeholder="扫码后自动识别" />
-          </div>
-          <div class="field">
-            <div class="label">
-              <span class="label-tag">Class</span>
-              <span>班级</span>
-            </div>
-            <input id="classInfo" class="input" type="text" readonly placeholder="扫码后自动识别" />
-          </div>
-        </div>
-
-        <div class="field-grid field-grid-single">
-          <div class="field">
-            <div class="label">
-              <span class="label-tag">Location</span>
-              <span>经纬度</span>
-            </div>
-            <div class="field-row">
-              <input
-                id="coord"
-                class="input"
-                type="text"
-                placeholder="例如 26.000000 119.000000（可使用空格、逗号、竖线等任意分隔符）"
-              />
-              <button class="btn btn-ghost" id="btnCoordPicker" style="flex-shrink:0;padding-inline:10px">
-                坐标拾取
-              </button>
-            </div>
-            <div class="hint-text">
-              <span class="hint-strong">提示：</span>
-              可以直接从地图复制整段经纬度，使用空格、逗号、竖线等任意符号分隔，后端会自动解析。
+              <span id="qrStatusDot" class="status-dot"></span>
+              <div class="status-message" id="qrStatusMessage" role="status" aria-live="polite">尚未开始扫码。</div>
             </div>
           </div>
         </div>
 
-        <div class="field-grid">
-          <div class="field">
-            <div class="label">
-              <span class="label-tag">Notify</span>
-              <span>微信通知 Key（可选）</span>
-              <a class="label-link" href="https://sct.ftqq.com/" target="_blank" rel="noopener noreferrer" title="前往 Server 酱官网获取 Key">↗</a>
-            </div>
-            <input id="wxKey" class="input" type="text" placeholder="例如 Server 酱 Key" />
-          </div>
-          <div class="field">
-            <div class="label">
-              <span class="label-tag">Notify</span>
-              <span>QQ 通知 Key（可选）</span>
-              <a class="label-link" href="https://qmsg.zendee.cn/" target="_blank" rel="noopener noreferrer" title="前往 Qmsg 酱官网获取 Key">↗</a>
-            </div>
-            <input id="qqKey" class="input" type="text" placeholder="例如 Qmsg 酱 Key" />
+        <div class="card">
+          <div class="card-head"><div class="card-title">使用说明</div></div>
+          <div class="card-body hints">
+            <div><b>1.</b> 点「生成二维码」，用微信扫码，成功后姓名与班级会自动填入左侧表单。</div>
+            <div><b>2.</b> 复制地图上的经纬度粘进「经纬度」，或点「坐标拾取」按浏览器定位。</div>
+            <div><b>3.</b> 添加每天的执行时间，可加多条；提交后由后端按时间触发，与页面是否打开无关。</div>
+            <div><b>4.</b> Cookie 只保存在服务端，页面不展示完整凭证；过期后重新扫码即可。</div>
           </div>
         </div>
-
-
-        <div class="field">
-          <div class="label">
-            <span class="label-tag">Schedule</span>
-            <span>执行时间点（支持秒）</span>
-          </div>
-          <div class="field-row">
-            <input id="timeInput" class="time-input" type="time" step="1" />
-            <select id="timePreset" class="time-input time-preset-select">
-              <option value="">常用时间</option>
-              <option value="07:10:00">07:10:00</option>
-              <option value="07:30:00">07:30:00</option>
-              <option value="08:00:00">08:00:00</option>
-              <option value="12:00:00">12:00:00</option>
-              <option value="18:00:00">18:00:00</option>
-              <option value="22:00:00">22:00:00</option>
-            </select>
-            <button class="btn btn-ghost" id="btnAddTime" style="flex-shrink:0;padding-inline:12px">
-              添加时间
-            </button>
-          </div>
-          <div id="timeList" class="time-list"></div>
-        </div>
-
-        <div class="field">
-          <div class="label">
-            <span class="label-tag">Range</span>
-            <span>日期范围（可选）</span>
-          </div>
-          <div class="field-row">
-            <div class="field-row" style="gap:6px">
-              <select id="dateStartYear" class="time-input date-year-select"></select>
-              <select id="dateStartMonth" class="time-input"></select>
-              <select id="dateStartDay" class="time-input"></select>
-            </div>
-            <span style="color:var(--text-soft);font-size:12px;">~</span>
-            <div class="field-row" style="gap:6px">
-              <select id="dateEndYear" class="time-input date-year-select"></select>
-              <select id="dateEndMonth" class="time-input"></select>
-              <select id="dateEndDay" class="time-input"></select>
-            </div>
-          </div>
-          <div class="hint-text">
-            <span class="hint-strong">说明：</span>不填则默认每天都执行；只填开始日期表示从该日开始长期执行，结束日期留空。
-          </div>
-        </div>
-
-        <div class="btn-row">
-          <button class="btn btn-primary" id="btnSubmitTask">
-            提交签到任务
-          </button>
-          <button class="btn btn-ghost" id="btnViewLogs" style="margin-left:8px">
-            查看最近执行日志
-          </button>
-        </div>
-
-        <div class="status-bar">
-          <div class="status-text">
-            <span id="taskStatusDot" class="status-dot"></span>
-            <span class="status-label">Task</span>
-          </div>
-          <div class="status-message" id="taskStatusMessage">等待扫码登录完成后再提交任务。</div>
-        </div>
-
-        <div id="taskLogPanel" class="log-panel" style="margin-top:12px;display:none">
-          <div class="log-panel-header">
-            <span class="log-panel-title">最近执行日志</span>
-            <button class="btn btn-ghost" id="btnHideLogs" style="padding-inline:8px;font-size:12px">
-              收起
-            </button>
-          </div>
-          <div id="taskLogList" class="log-list">
-            <div class="hint-text">暂无日志，请等待任务执行后再查看。</div>
-          </div>
-        </div>
-      </div>
+      </aside>
     </div>
-  </div>
+  </main>
 
   <script>
     const apiBase = "";

@@ -382,3 +382,47 @@ def test_delete_unknown_task_returns_404(client):
     token = _init_and_login(client)
 
     assert client.delete("/api/admin/tasks/999", headers={"X-Admin-Token": token}).status_code == 404
+
+
+def test_static_theme_assets_are_served(client):
+    """静态目录在 web_signin/static，不在 app/static，必须显式配置才能取到样式与脚本。"""
+    css = client.get("/static/theme.css")
+    assert css.status_code == 200
+    assert "text/css" in css.headers["Content-Type"]
+    assert b"--accent" in css.data
+
+    js = client.get("/static/theme.js")
+    assert js.status_code == 200
+    assert b"data-theme-toggle" in js.data
+
+
+def test_index_page_references_shared_theme(client):
+    html = client.get("/").get_data(as_text=True)
+    assert "/static/theme.css" in html
+    assert "/static/theme.js" in html
+
+
+def test_static_theme_assets_are_served(client):
+    """静态目录在 web_signin/static，不在 app/static，必须显式配置才能取到样式与脚本。"""
+    css = client.get("/static/theme.css")
+    assert css.status_code == 200
+    assert "text/css" in css.headers["Content-Type"]
+    assert b"--accent" in css.data
+
+    js = client.get("/static/theme.js")
+    assert js.status_code == 200
+    assert b"data-theme-toggle" in js.data
+
+
+def test_index_page_references_shared_theme(client):
+    html = client.get("/").get_data(as_text=True)
+    assert "/static/theme.css" in html
+    assert "/static/theme.js" in html
+
+
+def test_logo_asset_is_served(client):
+    """品牌图标由 web_signin/static/logo.png 提供，Web 与 exe 共用同一份。"""
+    logo = client.get("/static/logo.png")
+    assert logo.status_code == 200
+    assert logo.headers["Content-Type"] == "image/png"
+    assert logo.data[:8] == b"\x89PNG\r\n\x1a\n"
