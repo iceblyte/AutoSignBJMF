@@ -1,0 +1,5 @@
+# 桌面端（exe）额外依赖
+-r requirements.txt
+
+# 系统托盘
+pystray==0.19.5
