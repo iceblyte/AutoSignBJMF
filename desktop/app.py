@@ -313,7 +313,13 @@ class SigninApp:
         self.btn_stop.pack(side="left", padx=(6, 0))
         self.btn_run = theme.ghost_button(box, "立即签到一次", self._run_now)
         self.btn_run.pack(side="left", padx=(6, 0))
-        theme.link_button(box, "打开数据目录", self._open_data_dir).pack(side="left", padx=(12, 0))
+        portable = paths.is_portable()
+        tk.Label(
+            box,
+            text="数据：便携目录 data\\" if portable else "数据：用户目录",
+            bg=theme.C["bg"], fg=theme.C["text3"], font=theme.FONT_SMALL,
+        ).pack(side="left", padx=(14, 4))
+        theme.link_button(box, "打开数据目录", self._open_data_dir).pack(side="left")
 
     # ================= 数据 =================
 

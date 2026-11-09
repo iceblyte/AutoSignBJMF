@@ -28,6 +28,11 @@ def home_data_dir():
     return Path(os.path.expanduser("~")) / APP_NAME
 
 
+def is_portable():
+    """是否处于绿色模式（exe 同级存在 data/ 目录）。"""
+    return (exe_dir() / "data").is_dir()
+
+
 def data_dir():
     """决定数据目录落在哪儿：绿色版优先，其次用户目录。"""
     portable = exe_dir() / "data"

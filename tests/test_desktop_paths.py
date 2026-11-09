@@ -78,3 +78,31 @@ def test_portable_mode_uses_its_own_config(tmp_path, monkeypatch):
     assert paths.config_path() == tmp_path / "data" / "data.json"
     assert paths.settings_path() == tmp_path / "data" / "settings.json"
     assert paths.log_dir() == tmp_path / "data" / "logs"
+
+
+def test_is_portable_true_when_data_dir_exists(tmp_path, monkeypatch):
+    monkeypatch.setattr(paths, "exe_dir", lambda: tmp_path)
+    (tmp_path / "data").mkdir()
+
+    assert paths.is_portable() is True
+
+
+def test_is_portable_false_for_bare_exe(tmp_path, monkeypatch):
+    """单独拷出来的 exe 没有 data/，应判定为用户目录模式。"""
+    monkeypatch.setattr(paths, "exe_dir", lambda: tmp_path)
+
+    assert paths.is_portable() is False
+
+
+def test_is_portable_true_when_data_dir_exists(tmp_path, monkeypatch):
+    monkeypatch.setattr(paths, "exe_dir", lambda: tmp_path)
+    (tmp_path / "data").mkdir()
+
+    assert paths.is_portable() is True
+
+
+def test_is_portable_false_for_bare_exe(tmp_path, monkeypatch):
+    """单独拷出来的 exe 没有 data/，应判定为用户目录模式。"""
+    monkeypatch.setattr(paths, "exe_dir", lambda: tmp_path)
+
+    assert paths.is_portable() is False
