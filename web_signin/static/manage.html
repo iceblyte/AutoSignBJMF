@@ -54,10 +54,11 @@
 
     .auth-mask {
       position: fixed; inset: 0; z-index: 50;
-      display: grid; place-items: center;
+      display: none; place-items: center;
       background: color-mix(in srgb, var(--bg) 72%, transparent);
       backdrop-filter: blur(10px) saturate(140%);
     }
+    .auth-mask.show { display: grid; }
     .auth-mask[hidden] { display: none; }
     .auth-card {
       width: 360px; max-width: calc(100vw - 32px);
@@ -281,6 +282,8 @@
     const btnAuthSubmit = document.getElementById("btnAuthSubmit");
 
     let adminToken = sessionStorage.getItem("adminToken") || "";
+    let envManaged = false;
+    let localRequest = true;
     let needInit = false;
 
     async function refreshAuthMode() {
@@ -288,14 +291,26 @@
         const resp = await fetch(apiBase + "/api/admin/status");
         const data = await resp.json();
         needInit = !data.initialized;
+        envManaged = Boolean(data.env_managed);
+        localRequest = Boolean(data.local_request);
       } catch (e) {
         needInit = false;
       }
-      authTitle.textContent = needInit ? "初始化管理员 Key" : "管理员登录";
-      authHint.textContent = needInit
-        ? "首次使用请设置一个管理员 Key（数据库里只存 SHA-256 哈希）。设置成功后会用同一个 Key 自动登录。"
-        : "后台管理接口需要管理员 Key。Key 只保存在当前标签页，关闭标签页即失效。";
-      btnAuthSubmit.textContent = needInit ? "设置并登录" : "登录";
+
+      const remoteInitBlocked = needInit && !localRequest;
+      authTitle.textContent = envManaged
+        ? "管理员登录"
+        : needInit ? "初始化管理员 Key" : "管理员登录";
+      if (envManaged) {
+        authHint.textContent = "管理员 Key 由服务器环境变量 ADMIN_KEY 管理，请向部署者索取。";
+      } else if (remoteInitBlocked) {
+        authHint.textContent = "该服务尚未初始化管理员 Key。为避免公网服务被他人抢先设置，初始化只能在本机进行，或在服务器上设置 ADMIN_KEY 环境变量。";
+      } else if (needInit) {
+        authHint.textContent = "首次使用请设置一个管理员 Key（数据库里只存 SHA-256 哈希）。设置成功后会用同一个 Key 自动登录。";
+      } else {
+        authHint.textContent = "后台管理接口需要管理员 Key。Key 只保存在当前标签页，关闭标签页即失效。";
+      }
+      btnAuthSubmit.textContent = needInit && !remoteInitBlocked && !envManaged ? "设置并登录" : "登录";
       authError.textContent = "";
       authKey.value = "";
       authMask.classList.add("show");

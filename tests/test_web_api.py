@@ -232,7 +232,9 @@ def test_admin_status_is_public_and_initially_false(client):
     resp = client.get("/api/admin/status")
 
     assert resp.status_code == 200
-    assert resp.get_json() == {"initialized": False}
+    data = resp.get_json()
+    assert data["initialized"] is False
+    assert "env_managed" in data and "local_request" in data
 
 
 def test_admin_endpoints_require_initialized_key(client):
@@ -252,7 +254,7 @@ def test_admin_init_only_once(client):
     resp = client.post("/api/admin/init", json={"key": "b"})
 
     assert resp.status_code == 409
-    assert client.get("/api/admin/status").get_json() == {"initialized": True}
+    assert client.get("/api/admin/status").get_json()["initialized"] is True
 
 
 def test_admin_init_requires_key(client):
@@ -426,3 +428,55 @@ def test_logo_asset_is_served(client):
     assert logo.status_code == 200
     assert logo.headers["Content-Type"] == "image/png"
     assert logo.data[:8] == b"\x89PNG\r\n\x1a\n"
+
+
+def test_admin_init_rejected_from_remote(client):
+    """未初始化的服务公网可达时，不能让第一个访问者设 Key。"""
+    resp = client.post(
+        "/api/admin/init",
+        json={"key": "attacker"},
+        environ_base={"REMOTE_ADDR": "203.0.113.9"},
+    )
+
+    assert resp.status_code == 403
+    assert resp.get_json()["need_env"] is True
+    assert client.get("/api/admin/status").get_json()["initialized"] is False
+
+
+def test_admin_init_remote_allowed_with_explicit_flag(client, monkeypatch):
+    monkeypatch.setenv("ADMIN_ALLOW_REMOTE_INIT", "1")
+
+    resp = client.post(
+        "/api/admin/init",
+        json={"key": "deploy"},
+        environ_base={"REMOTE_ADDR": "203.0.113.9"},
+    )
+
+    assert resp.status_code == 200
+    assert client.get("/api/admin/status").get_json()["initialized"] is True
+
+
+def test_env_admin_key_overrides_database(tmp_path, monkeypatch):
+    monkeypatch.setattr(web_db, "DB_PATH", tmp_path / "env.db")
+    monkeypatch.setenv("ADMIN_KEY", "from-env")
+
+    application = web_app.create_app()
+    application.config.update(TESTING=True)
+    client = application.test_client()
+    try:
+        assert client.post("/api/admin/login", json={"key": "from-env"}).status_code == 200
+        assert client.post("/api/admin/login", json={"key": "other"}).status_code == 401
+    finally:
+        scheduler = application.config.get("SCHEDULER")
+        if scheduler and scheduler.running:
+            scheduler.shutdown(wait=False)
+
+
+def test_admin_login_is_throttled(client):
+    client.post("/api/admin/init", json={"key": "right"})
+
+    for _ in range(5):
+        assert client.post("/api/admin/login", json={"key": "wrong"}).status_code == 401
+
+    resp = client.post("/api/admin/login", json={"key": "right"})
+    assert resp.status_code == 429

@@ -64,6 +64,7 @@ def create_app():
     # 启动时加载已启用任务到调度器
     register_existing_tasks(app)
 
+
     @app.get("/health")
     def health_check():
         return {"status": "ok"}
@@ -490,13 +491,61 @@ def create_app():
 
         return token, None
 
+    def _env_admin_key():
+        return (os.environ.get("ADMIN_KEY") or "").strip()
+
+    def _sync_env_admin_key(db):
+        """
+        用 ADMIN_KEY 环境变量覆盖库里的哈希：运维改环境变量即可轮换，不必手动改库。
+        没设置环境变量时完全不动库里已有的值。
+        """
+        key = _env_admin_key()
+        if not key:
+            return
+        digest = _hash_admin_key(key)
+        setting = db.query(Setting).filter(Setting.key == "admin_key_hash").first()
+        if setting:
+            if setting.value != digest:
+                setting.value = digest
+        else:
+            db.add(Setting(key="admin_key_hash", value=digest))
+        db.commit()
+
+    def _is_local_request():
+        """请求是否来自本机（用于限制管理员初始化）。"""
+        addr = (request.remote_addr or "").strip()
+        return addr in ("127.0.0.1", "::1", "localhost")
+
+    def _login_throttle(app):
+        """返回 (允许?, 还需等待秒数)。连续 5 次失败锁 60 秒，防止在线爆破。"""
+        ip = request.remote_addr or "unknown"
+        state = app.config.setdefault("ADMIN_FAILS", {})
+        fails, lock_until = state.get(ip, (0, 0.0))
+        now = time.time()
+        if lock_until > now:
+            return False, int(lock_until - now) + 1
+        if fails >= 5 and lock_until and lock_until <= now:
+            state[ip] = (0, 0.0)
+        return True, 0
+
+    def _record_login_failure(app):
+        ip = request.remote_addr or "unknown"
+        state = app.config.setdefault("ADMIN_FAILS", {})
+        fails, _ = state.get(ip, (0, 0.0))
+        fails += 1
+        state[ip] = (fails, time.time() + 60 if fails >= 5 else 0.0)
+
     @app.get("/api/admin/status")
     def api_admin_status():
         """公开的状态查询：管理员 Key 是否已经初始化，供管理页决定显示登录还是初始化。"""
         SessionLocal = app.config["DB_SESSION_FACTORY"]
         with SessionLocal() as db:
             initialized = bool(_get_admin_key_hash(db))
-        return jsonify({"initialized": initialized})
+        return jsonify({
+            "initialized": initialized,
+            "env_managed": bool(_env_admin_key()),
+            "local_request": _is_local_request(),
+        })
 
     @app.post("/api/admin/init")
     def api_admin_init():
@@ -510,6 +559,15 @@ def create_app():
         key = (data.get("key") or "").strip()
         if not key:
             return jsonify({"error": "missing key"}), 400
+
+        # 安全边界：未初始化的服务一旦公网可达，谁先调用谁就成了管理员。
+        # 因此默认只允许本机初始化，远程部署请设置 ADMIN_KEY 环境变量。
+        allow_remote = (os.environ.get("ADMIN_ALLOW_REMOTE_INIT") or "").strip() == "1"
+        if not _is_local_request() and not allow_remote:
+            return jsonify({
+                "error": "为安全起见，管理员 Key 只能在本机初始化；远程部署请设置 ADMIN_KEY 环境变量",
+                "need_env": True,
+            }), 403
 
         with SessionLocal() as db:
             existing_hash = _get_admin_key_hash(db)
@@ -538,6 +596,10 @@ def create_app():
         - expires_in: 过期时间（秒），默认 24 小时
         """
         SessionLocal = app.config["DB_SESSION_FACTORY"]
+        allowed, wait = _login_throttle(app)
+        if not allowed:
+            return jsonify({"error": f"尝试过于频繁，请 {wait} 秒后再试"}), 429
+
         data = request.get_json(silent=True) or {}
         key = (data.get("key") or "").strip()
         if not key:
@@ -549,6 +611,7 @@ def create_app():
                 return jsonify({"error": "admin key not initialized"}), 400
 
             if not hmac.compare_digest(_hash_admin_key(key), key_hash):
+                _record_login_failure(app)
                 return jsonify({"error": "invalid admin key"}), 401
 
         # 生成 admin token，默认有效期 24 小时
@@ -796,5 +859,9 @@ def create_app():
             db.commit()
 
         return jsonify({"status": "ok"})
+
+        # 若设置了 ADMIN_KEY 环境变量，以它为准（便于轮换与容器部署）
+    with app.config["DB_SESSION_FACTORY"]() as _db:
+        _sync_env_admin_key(_db)
 
     return app
