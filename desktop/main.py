@@ -132,8 +132,9 @@ def main(argv=None):
 
     _enable_dpi_awareness()
 
-    # 默认用 WebView2 渲染与原型一致的界面；不可用时回退到 tkinter 版
-    if "--classic" not in argv:
+    # 默认用 tkinter 常驻界面（内存约 80MB，适合开机自启长期挂着）。
+    # WebView2 版界面更贴近原型，但常驻要 500MB 以上，改为显式开启：--webview
+    if "--webview" in argv:
         try:
             from desktop import webui
 
