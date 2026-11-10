@@ -39,6 +39,11 @@ Write-Host '[3/4] PyInstaller 打包'
     --icon $icon `
     --paths $root `
     --add-data "$root\desktop\assets;desktop\assets" `
+    --add-data "$root\desktop\webui;desktop\webui" `
+    --collect-all webview `
+    --hidden-import webview.platforms.edgechromium `
+    --hidden-import clr_loader `
+    --hidden-import pythonnet `
     --hidden-import pystray._win32 `
     --hidden-import PIL.ImageTk `
     --hidden-import PIL._tkinter_finder `

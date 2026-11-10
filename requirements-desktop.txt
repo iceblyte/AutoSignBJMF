@@ -3,3 +3,6 @@
 
 # 系统托盘
 pystray==0.19.5
+
+# 用系统 WebView2 渲染界面（与 Web 端同一套 HTML/CSS）
+pywebview==6.2.1

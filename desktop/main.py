@@ -76,11 +76,19 @@ def _self_check():
 
     import desktop.paths as paths
 
+    try:
+        import webview  # noqa: F401
+
+        webview_state = "pywebview ok"
+    except Exception:
+        webview_state = "pywebview missing"
+
     lines = [
         f"python {sys.version.split()[0]}",
         f"frozen {getattr(sys, 'frozen', False)}",
         f"data_dir {paths.ensure_data_dir()}",
         f"requests {requests.__version__}",
+        webview_state,
         "self-check ok",
     ]
     _report(lines)
@@ -123,6 +131,15 @@ def main(argv=None):
         return 0
 
     _enable_dpi_awareness()
+
+    # 默认用 WebView2 渲染与原型一致的界面；不可用时回退到 tkinter 版
+    if "--classic" not in argv:
+        try:
+            from desktop import webui
+
+            return webui.run(debug="--debug" in argv)
+        except Exception as exc:  # noqa: BLE001
+            print(f"WebView 界面不可用，回退到经典界面：{exc}")
 
     import tkinter as tk
 
