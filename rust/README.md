@@ -147,6 +147,26 @@ GPUI 单进程就能同时满足「开窗 55 MB」「关窗后不掉到几百兆
   回归脚本：`python rust/_tools/close_test.py`（拉起 → 发 WM_CLOSE → 断言隐藏且进程存活）
 - 打包：`build/build-rust.ps1`（`-Portable` 额外出一份便携 zip，包内不含任何账号数据）
 
+### 已完成（第八轮）
+
+一批体验问题的集中修复：
+
+- **中文乱码**
+  - 任务管理器里进程名乱码：`app.rc` 是 UTF-8，但 `windres` / `rc.exe` 默认按系统 ANSI（中文机器是 GBK）解析，
+    加 `#pragma code_page(65001)` 后 `FileDescription` 才是正常中文
+  - 复制日志乱码：原来走 `powershell "$input | Set-Clipboard"`，PowerShell 按控制台代码页解码 UTF-8 字节；
+    改成 Win32 `OpenClipboard + SetClipboardData(CF_UNICODETEXT)` 直写 Unicode，无子进程也无编码问题
+- **图标偏小**：ico 生成时留白从 22% 收到 6%，并补齐 16/20/24/32/40/48/64/128/256 九个尺寸
+  （`_tools/make_app_icon.py`）；托盘位图同样收到 4%
+- **通知开关能点了**：开关状态 = Key 是否非空，所以点它等于「已配置 → 清空 Key 关掉渠道；未配置 → 聚焦输入框」
+- **暂停按钮跟状态走**：暂停中显示「恢复」，恢复后显示「暂停」
+- **重试次数 / 间隔改下拉**：点开是一行 chip（次数 1–10；间隔给 1/2/3/5/10/15/20/30/45/60 常用值）
+- **执行时间改成点选**：快捷时间（07:30 / 12:00 / 21:30）+「当前时间」，时/分各一个下拉，
+  分钟粒度 **5 分钟**；已存在的时间会拦截并把「添加」置灰
+- **日志可滚动 + 持久化**：面板改成 `overflow_y_scroll` 并自动跟到最新；
+  每行同时写进 `<数据目录>/logs/app-YYYY-MM-DD.log`，启动时读回当天最近 200 行；「清空」会一并清文件
+- **设置里删掉「通知」页**：那页只是把主界面已有的信息又列一遍，没有可操作项
+
 ### 已完成（第七轮）
 
 - **导入 / 导出不再卡死**：`rfd::FileDialog` 是同步模态，它会在**调用线程**上开自己的消息循环，
@@ -247,6 +267,8 @@ QA 用的环境变量（只影响开发，不影响正常使用）：
 |---|---|
 | `AUTOSIGN_OPEN=settings\|data\|qr\|time` | 启动后直接打开对应覆盖层，方便截图 |
 | `AUTOSIGN_TEST_DIALOG=import\|export` | 启动 2 秒后自动弹文件对话框，配合 `dialog_test.py` 验证不卡死 |
+| `AUTOSIGN_TEST_COPY=1` | 启动 2 秒后自动复制日志，配合 `clip_read.py` 验证中文不乱码 |
+| `AUTOSIGN_PICKER=hour\|minute\|attempts\|delay` | 直接把对应下拉展开，方便截图 |
 | `AUTOSIGN_NO_TRAY=1` | 不创建托盘图标 |
 
 辅助脚本（都不参与产品）：
@@ -257,3 +279,5 @@ QA 用的环境变量（只影响开发，不影响正常使用）：
 | `_tools/tray_zoom.py x y w h scale out.png` | 放大屏幕某块，用来核托盘图标 |
 | `_tools/dialog_test.py` | 断言文件对话框打开时主窗口仍响应 |
 | `_tools/make_tray_icon.py` | 从 logo 生成 `app/assets/tray-32.rgba` |
+| `_tools/make_app_icon.py` | 从 logo 生成 `app/assets/app.ico`（9 个尺寸） |
+| `_tools/clip_read.py` | 读回剪贴板文本，验证复制的中文 |

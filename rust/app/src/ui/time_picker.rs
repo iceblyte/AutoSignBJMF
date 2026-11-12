@@ -1,21 +1,25 @@
-//! 「添加执行时间」：从列表里点选小时与分钟，不再手输 `21:31:00` 这种字符串。
+//! 「添加执行时间」：快捷时间 + 时/分下拉点选，不再手输 `21:31:00`。
 //!
-//! 布局沿用原型的组件语言：14px 圆角卡片 + 顶部标题栏 + 底部按钮行；
-//! 选中态用强调色实底，未选中是 `surface-2` 描边块，悬停提亮一档。
+//! 分钟粒度是 5 分钟 —— 签到时间点没必要精确到个位，60 个格子也点得累。
+//! 布局沿用原型的组件语言：14px 圆角卡片 + 顶部标题栏 + 底部按钮行。
 
+use chrono::Timelike;
 use gpui_kit::base::StyledExt;
 use gpui_kit::prelude::*;
 use gpui_kit::{div, px, rgba, rgb, AnyElement, Context, SharedString};
 
 use crate::theme::*;
-use crate::ui::main_view::{AppView, Overlay};
-use crate::ui::widgets::{button, BtnKind, BtnSize};
+use crate::ui::main_view::{AppView, OpenSelect, Overlay};
+use crate::ui::widgets::{button, choice_chip, BtnKind, BtnSize};
 
-const PANEL_W: f32 = 428.0;
+const PANEL_W: f32 = 420.0;
+/// 分钟粒度：0, 5, 10 ... 55
+const MINUTE_STEP: u32 = 5;
 
-/// 打开选择器时的默认时间：取列表里最后一个，往后挪一小时；没有就 07:30。
-///
-/// 纯函数，便于单测。
+/// 快捷时间：早上上学、午间、晚上各一个。
+const QUICK: [(u32, u32); 3] = [(7, 30), (12, 0), (21, 30)];
+
+/// 打开选择器时的默认时间：取列表里最后一个，往后挪一小时并对齐到 5 分钟；没有就 07:30。
 pub fn default_pick(times: &[String]) -> (u32, u32) {
     let Some(last) = times.last() else {
         return (7, 30);
@@ -23,7 +27,17 @@ pub fn default_pick(times: &[String]) -> (u32, u32) {
     let mut parts = last.split(':');
     let hour: u32 = parts.next().and_then(|v| v.parse().ok()).unwrap_or(7);
     let minute: u32 = parts.next().and_then(|v| v.parse().ok()).unwrap_or(30);
-    ((hour + 1) % 24, minute)
+    ((hour + 1) % 24, round_minute(minute))
+}
+
+/// 现在的时间，分钟向下取整到 5 分钟。
+pub fn now_pick() -> (u32, u32) {
+    let now = chrono::Local::now();
+    (now.hour(), round_minute(now.minute()))
+}
+
+fn round_minute(minute: u32) -> u32 {
+    (minute / MINUTE_STEP) * MINUTE_STEP
 }
 
 /// 把关掉秒后的 `HH:MM` 拼成配置里用的 `HH:MM:SS`。
@@ -31,77 +45,187 @@ pub fn to_config_value(hour: u32, minute: u32) -> String {
     format!("{hour:02}:{minute:02}:00")
 }
 
-/// 一个可点的小格子。
-fn pick_cell(
-    label: String,
-    selected: bool,
+fn pick_text(hour: u32, minute: u32) -> String {
+    format!("{hour:02}:{minute:02}")
+}
+
+/// 一个下拉触发器（比输入框矮一点，和列表块同高）。
+fn dropdown(
+    value: String,
+    open: bool,
     width: f32,
-    id: &str,
+    id: &'static str,
     p: &Palette,
     cx: &mut Context<AppView>,
-    on_pick: impl Fn(&mut AppView) + 'static,
+    target: OpenSelect,
 ) -> AnyElement {
-    let base = div()
-        .id(SharedString::from(id.to_string()))
+    div()
+        .id(SharedString::from(id))
         .w(px(width))
-        .h(px(28.0))
+        .h(px(32.0))
+        .flex_none()
         .flex()
         .items_center()
-        .justify_center()
-        .rounded(px(6.0))
+        .gap(px(2.0))
+        .px(px(9.0))
+        .rounded(px(7.0))
         .border_1()
-        .text_size(px(11.5))
-        .child(label);
-
-    if selected {
-        base.bg(rgb(p.accent))
-            .border_color(rgb(p.accent))
-            .text_color(rgb(0xffffff))
-            .into_any_element()
-    } else {
-        base.bg(rgb(p.surface_2))
-            .border_color(rgb(p.line))
-            .text_color(rgb(p.text_2))
-            .cursor_pointer()
-            .hover(|style| style.bg(rgb(p.surface_3)).text_color(rgb(p.text)))
-            .on_click(cx.listener(move |this, _, _, cx| {
-                on_pick(this);
-                cx.notify();
-            }))
-            .into_any_element()
-    }
+        .border_color(rgb(if open { p.accent } else { p.line_2 }))
+        .bg(rgb(p.surface))
+        .child(
+            div()
+                .flex_1()
+                .text_size(px(14.0))
+                .text_color(rgb(p.text))
+                .child(value),
+        )
+        .child(
+            div()
+                .text_size(px(9.0))
+                .text_color(rgb(p.text_3))
+                .child(if open { "▲" } else { "▼" }),
+        )
+        .cursor_pointer()
+        .hover(|style| style.border_color(rgb(p.text_3)))
+        .on_click(cx.listener(move |this, _, _, cx| {
+            this.open_select = if this.open_select == target {
+                OpenSelect::None
+            } else {
+                target
+            };
+            cx.notify();
+        }))
+        .into_any_element()
 }
 
 pub fn render(view: &mut AppView, p: &Palette, cx: &mut Context<AppView>) -> AnyElement {
-    let picked = (view.picker_hour, view.picker_minute);
-    let preview = format!("{:02}:{:02}", picked.0, picked.1);
+    let (hour, minute) = (view.picker_hour, view.picker_minute);
+    let open_hour = view.open_select == OpenSelect::Hour;
+    let open_minute = view.open_select == OpenSelect::Minute;
 
-    // ---- 小时：6 列 × 4 行 ----
-    let mut hours = div().flex().flex_wrap().gap(px(4.0)).w_full();
-    for hour in 0..24u32 {
-        hours = hours.child(pick_cell(
-            format!("{hour:02}"),
-            hour == picked.0,
-            60.0,
-            &format!("pick-h-{hour}"),
-            p,
-            cx,
-            move |this| this.picker_hour = hour,
-        ));
+    // ---- 快捷时间：常用时刻 + 当前时间 ----
+    let mut quick = div().flex().items_center().gap(px(4.0)).flex_wrap();
+    for (h, m) in QUICK {
+        let selected = h == hour && m == minute;
+        let chip = choice_chip(pick_text(h, m), selected, 58.0, p);
+        quick = quick.child(if selected {
+            chip.into_any_element()
+        } else {
+            chip.id(SharedString::from(format!("quick-{h}-{m}")))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                this.picker_hour = h;
+                this.picker_minute = m;
+                this.open_select = OpenSelect::None;
+                cx.notify();
+            }))
+            .into_any_element()
+        });
+    }
+    let now = now_pick();
+    let now_selected = now == (hour, minute);
+    let now_chip = choice_chip("当前时间", now_selected, 74.0, p);
+    quick = quick.child(if now_selected {
+        now_chip.into_any_element()
+    } else {
+        now_chip
+            .id("quick-now")
+            .on_click(cx.listener(|this, _, _, cx| {
+                let (h, m) = now_pick();
+                this.picker_hour = h;
+                this.picker_minute = m;
+                this.open_select = OpenSelect::None;
+                cx.notify();
+            }))
+            .into_any_element()
+    });
+
+    // ---- 时 / 分下拉 ----
+    let hour_dd = dropdown(
+        format!("{hour:02}"),
+        open_hour,
+        70.0,
+        "pick-hour",
+        p,
+        cx,
+        OpenSelect::Hour,
+    );
+    let minute_dd = dropdown(
+        format!("{minute:02}"),
+        open_minute,
+        70.0,
+        "pick-minute",
+        p,
+        cx,
+        OpenSelect::Minute,
+    );
+
+    // 时 / 分一行；展开的列表另起一行（否则会被 flex_row 挤到右边）
+    let mut picker_block = div()
+        .flex()
+        .flex_col()
+        .w_full()
+        .gap(px(8.0))
+        .child(
+            div()
+                .flex()
+                .w_full()
+                .items_center()
+                .gap(px(8.0))
+                .child(hour_dd)
+                .child(
+                    div()
+                        .text_size(px(14.0))
+                        .text_color(rgb(p.text_3))
+                        .child(":"),
+                )
+                .child(minute_dd)
+                .child(
+                    div()
+                        .text_size(px(11.0))
+                        .text_color(rgb(p.text_3))
+                        .child("5 分钟一档"),
+                ),
+        );
+
+    // ---- 展开的小时列表（24 个，8 列）----
+    if open_hour {
+        let mut grid = div().flex().w_full().flex_wrap().gap(px(4.0));
+        for h in 0..24u32 {
+            let chip = choice_chip(format!("{h:02}"), h == hour, 42.0, p);
+            grid = grid.child(if h == hour {
+                chip.into_any_element()
+            } else {
+                chip.id(SharedString::from(format!("pick-h-{h}")))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                    this.picker_hour = h;
+                    this.open_select = OpenSelect::None;
+                    cx.notify();
+                }))
+                .into_any_element()
+            });
+        }
+        picker_block = picker_block.child(grid);
     }
 
-    // ---- 分钟：10 列 × 6 行 ----
-    let mut minutes = div().flex().flex_wrap().gap(px(3.0)).w_full();
-    for minute in 0..60u32 {
-        minutes = minutes.child(pick_cell(
-            format!("{minute:02}"),
-            minute == picked.1,
-            36.0,
-            &format!("pick-m-{minute}"),
-            p,
-            cx,
-            move |this| this.picker_minute = minute,
-        ));
+    // ---- 展开的分钟列表（12 个，12 列）----
+    if open_minute {
+        let mut grid = div().flex().w_full().flex_wrap().gap(px(4.0));
+        for index in 0..(60 / MINUTE_STEP) {
+            let m = index * MINUTE_STEP;
+            let chip = choice_chip(format!("{m:02}"), m == minute, 42.0, p);
+            grid = grid.child(if m == minute {
+                chip.into_any_element()
+            } else {
+                chip.id(SharedString::from(format!("pick-m-{m}")))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                    this.picker_minute = m;
+                    this.open_select = OpenSelect::None;
+                    cx.notify();
+                }))
+                .into_any_element()
+            });
+        }
+        picker_block = picker_block.child(grid);
     }
 
     let conflict = view
@@ -109,19 +233,19 @@ pub fn render(view: &mut AppView, p: &Palette, cx: &mut Context<AppView>) -> Any
         .settings
         .times
         .iter()
-        .any(|existing| existing == &to_config_value(picked.0, picked.1));
+        .any(|existing| existing == &to_config_value(hour, minute));
 
-    let mut hint = div()
-        .text_size(px(11.0))
-        .text_color(rgb(p.text_3))
-        .child("选好小时后点分钟；已经是列表里的时间会被拦下");
-
-    if conflict {
-        hint = div()
+    let hint = if conflict {
+        div()
             .text_size(px(11.0))
             .text_color(rgb(p.warn))
-            .child(format!("{preview} 已经在列表里了"));
-    }
+            .child(format!("{} 已经在列表里了", pick_text(hour, minute)))
+    } else {
+        div()
+            .text_size(px(11.0))
+            .text_color(rgb(p.text_3))
+            .child("点「时」或「分」展开列表选择")
+    };
 
     div()
         .absolute()
@@ -172,60 +296,34 @@ pub fn render(view: &mut AppView, p: &Palette, cx: &mut Context<AppView>) -> Any
                                 .hover(|style| style.bg(rgb(p.surface_3)))
                                 .on_click(cx.listener(|this, _, _, cx| {
                                     this.overlay = Overlay::None;
+                                    this.open_select = OpenSelect::None;
                                     cx.notify();
                                 }))
                                 .child("×"),
                         ),
                 )
-                // ---- 预览 ----
+                // ---- 内容 ----
                 .child(
                     div()
                         .flex()
-                        .items_end()
+                        .flex_col()
                         .gap(px(10.0))
                         .px(px(16.0))
-                        .pt(px(14.0))
-                        .child(
-                            div()
-                                .text_size(px(30.0))
-                                .text_color(rgb(p.text))
-                                .child(preview),
-                        )
-                        .child(
-                            div()
-                                .pb(px(5.0))
-                                .text_size(px(11.0))
-                                .text_color(rgb(p.text_3))
-                                .child("时 : 分（秒固定 00）"),
-                        ),
-                )
-                // ---- 小时 ----
-                .child(
-                    div()
-                        .px(px(16.0))
-                        .pt(px(12.0))
-                        .pb(px(4.0))
+                        .py(px(14.0))
                         .child(
                             div()
                                 .text_size(px(10.5))
                                 .text_color(rgb(p.text_3))
-                                .child("小时"),
+                                .child("快捷"),
                         )
-                        .child(hours),
-                )
-                // ---- 分钟 ----
-                .child(
-                    div()
-                        .px(px(16.0))
-                        .pt(px(10.0))
-                        .pb(px(4.0))
+                        .child(quick)
                         .child(
                             div()
                                 .text_size(px(10.5))
                                 .text_color(rgb(p.text_3))
-                                .child("分钟"),
+                                .child("时间"),
                         )
-                        .child(minutes),
+                        .child(picker_block),
                 )
                 // ---- 底部 ----
                 .child(
@@ -245,6 +343,7 @@ pub fn render(view: &mut AppView, p: &Palette, cx: &mut Context<AppView>) -> Any
                                 .cursor_pointer()
                                 .on_click(cx.listener(|this, _, _, cx| {
                                     this.overlay = Overlay::None;
+                                    this.open_select = OpenSelect::None;
                                     cx.notify();
                                 })),
                         )
@@ -254,11 +353,14 @@ pub fn render(view: &mut AppView, p: &Palette, cx: &mut Context<AppView>) -> Any
                                 .when(!conflict, |element| {
                                     element.cursor_pointer().on_click(cx.listener(
                                         |this, _, _, cx| {
-                                            let value =
-                                                to_config_value(this.picker_hour, this.picker_minute);
+                                            let value = to_config_value(
+                                                this.picker_hour,
+                                                this.picker_minute,
+                                            );
                                             match this.state.add_time(&value) {
                                                 Ok(()) => {
                                                     this.overlay = Overlay::None;
+                                                    this.open_select = OpenSelect::None;
                                                     this.error = None;
                                                 }
                                                 Err(error) => this.error = Some(error.0),
@@ -283,9 +385,10 @@ mod tests {
     }
 
     #[test]
-    fn 默认值是列表最后一个时间加一小时() {
+    fn 默认值是列表最后一个时间加一小时并对齐到五分钟() {
         let times = vec!["07:30:00".to_string(), "21:31:00".to_string()];
-        assert_eq!(default_pick(&times), (22, 31));
+        // 21:31 + 1h = 22:31，分钟对齐到 30
+        assert_eq!(default_pick(&times), (22, 30));
     }
 
     #[test]
@@ -295,8 +398,23 @@ mod tests {
     }
 
     #[test]
+    fn 分钟按五取整() {
+        assert_eq!(round_minute(0), 0);
+        assert_eq!(round_minute(4), 0);
+        assert_eq!(round_minute(5), 5);
+        assert_eq!(round_minute(31), 30);
+        assert_eq!(round_minute(59), 55);
+    }
+
+    #[test]
+    fn 当前时间总是落在五分钟档位上() {
+        let (_, minute) = now_pick();
+        assert_eq!(minute % MINUTE_STEP, 0, "分钟应当是 5 的倍数：{minute}");
+    }
+
+    #[test]
     fn 拼接成配置用的格式() {
         assert_eq!(to_config_value(9, 5), "09:05:00");
-        assert_eq!(to_config_value(23, 59), "23:59:00");
+        assert_eq!(to_config_value(23, 55), "23:55:00");
     }
 }

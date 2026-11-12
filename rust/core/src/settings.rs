@@ -51,7 +51,7 @@ impl Default for Settings {
             times: vec![DEFAULT_TIME.to_string()],
             retry_attempts: DEFAULT_RETRY_ATTEMPTS,
             retry_delay_minutes: DEFAULT_RETRY_DELAY_MINUTES,
-            autostart: false,
+            autostart: true,
             minimize_to_tray: true,
             acc: DEFAULT_ACC.to_string(),
         }
@@ -238,7 +238,7 @@ mod tests {
         assert_eq!(loaded.retry_attempts, 3);
         assert_eq!(loaded.retry_delay_minutes, 5);
         assert!(loaded.minimize_to_tray);
-        assert!(!loaded.autostart);
+        assert!(loaded.autostart, "开机自启默认开启");
     }
 
     #[test]

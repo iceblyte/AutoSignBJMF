@@ -14,14 +14,12 @@ use crate::ui::widgets::*;
 pub fn render(view: &mut AppView, p: &Palette, cx: &mut Context<AppView>) -> AnyElement {
     let body = match view.settings_tab {
         SettingsTab::General => general(view, p, cx),
-        SettingsTab::Notify => notify(view, p),
         SettingsTab::Data => data(view, p, cx),
         SettingsTab::About => about(p),
     };
 
     let items = [
         (SettingsTab::General, "icons/gear.svg", "常规"),
-        (SettingsTab::Notify, "icons/bell.svg", "通知"),
         (SettingsTab::Data, "icons/database.svg", "数据"),
         (SettingsTab::About, "icons/info.svg", "关于"),
     ];
@@ -324,52 +322,6 @@ fn general(view: &mut AppView, p: &Palette, cx: &mut Context<AppView>) -> AnyEle
                         })),
                 ),
         )
-        .into_any_element()
-}
-
-fn notify(view: &mut AppView, p: &Palette) -> AnyElement {
-    let wx = crate::state::mask_key(&view.state.draft.wx_key);
-    let qq = crate::state::mask_key(&view.state.draft.qq_key);
-    let show = |text: String| {
-        let value = if text.is_empty() { "未配置".to_string() } else { text };
-        div()
-            .text_size(px(11.5))
-            .text_color(rgb(p.text_2))
-            .child(value)
-            .into_any_element()
-    };
-
-    pane(p)
-        .child(heading("通知渠道", p))
-        .child(sub("Key 保存在本机 data.json 里，界面只显示掩码。", p))
-        .child(
-            group(p)
-                .child(row(
-                    "微信 · Server 酱",
-                    "每天执行完发一条汇总；全成功只发一行",
-                    show(wx),
-                    p,
-                ))
-                .child(row(
-                    "QQ · Qmsg 酱",
-                    "与微信渠道独立，可只开一个",
-                    show(qq),
-                    p,
-                )),
-        )
-        .child(
-            div()
-                .mt(px(12.0))
-                .p(px(10.0))
-                .rounded(px(10.0))
-                .bg(rgb(p.accent_soft))
-                .border_1()
-                .border_color(rgb(p.accent_line))
-                .text_size(px(11.5))
-                .text_color(rgb(p.accent))
-                .child("Key 的填写与开关在主界面的「签到地点与通知」面板里，改完点「保存」生效。"),
-        )
-        .child(div().flex_1())
         .into_any_element()
 }
 

@@ -73,10 +73,43 @@ pub fn switch(checked: bool, disabled: bool, p: &Palette) -> Div {
         )
 }
 
+/// 选项块：下拉列表 / 时间选择器里的一个可选项。
+///
+/// 选中态是强调色实底，未选中是 `surface-2` 描边，悬停提亮一档 ——
+/// 与主界面的 chip 保持同一套语言。需要点击时由调用方补 `.id(...)`。
+pub fn choice_chip(
+    label: impl Into<SharedString>,
+    selected: bool,
+    width: f32,
+    p: &Palette,
+) -> Div {
+    let base = div()
+        .h(px(26.0))
+        .w(px(width))
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded(px(6.0))
+        .border_1()
+        .text_size(px(11.5))
+        .child(label.into());
+
+    if selected {
+        base.bg(rgb(p.accent))
+            .border_color(rgb(p.accent))
+            .text_color(rgb(0xffffff))
+    } else {
+        base.bg(rgb(p.surface_2))
+            .border_color(rgb(p.line))
+            .text_color(rgb(p.text_2))
+            .cursor_pointer()
+            .hover(|style| style.bg(rgb(p.surface_3)).text_color(rgb(p.text)))
+    }
+}
+
 /// 按钮的语气。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BtnKind {
-    /// 默认：白底 + 描边
+pub enum BtnKind {    /// 默认：白底 + 描边
     Default,
     /// 主按钮 `.btn-p`：强调色底
     Primary,

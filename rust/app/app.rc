@@ -1,3 +1,7 @@
+// 本文件是 UTF-8。不加这一行，windres / rc.exe 会按系统 ANSI 代码页（中文机器上是 GBK）解析，
+// 结果就是任务管理器里「属性 → 详细信息」那几栏中文全是乱码。
+#pragma code_page(65001)
+
 1 ICON "assets\\app.ico"
 
 1 VERSIONINFO

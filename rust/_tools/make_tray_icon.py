@@ -19,7 +19,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 SRC = os.path.join(ROOT, "design", "v2", "assets", "logo.png")
 DST = os.path.join(ROOT, "rust", "app", "assets", "tray-32.rgba")
 SIZE = 32
-PAD = 0.06  # logo 贴边时留一点空隙，否则托盘里会显得顶格
+PAD = 0.04  # 留白越小图标越饱满；太小会贴边，4% 实测刚好
 
 
 def read_png(path):

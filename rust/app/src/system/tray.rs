@@ -301,16 +301,19 @@ mod tests {
         let (rgba, _, _) = icon_rgba();
         // logo 四周透明，左上角应当是空的
         assert_eq!(rgba[3], 0, "左上角应当透明");
-        // 中心落在 logo 主体上，有不透明度且不是纯白（是 logo 的蓝色）
-        let center = (16 * 32 + 16) * 4;
-        assert!(rgba[center + 3] > 200, "中心应当基本不透明");
+
+        // 不透明像素要占到一定比例，否则说明贴图缩得太小、四周全是空白
+        let opaque = (0..32 * 32).filter(|i| rgba[i * 4 + 3] > 200).count();
+        let ratio = opaque as f32 / (32.0 * 32.0);
         assert!(
-            !(rgba[center] == 255 && rgba[center + 1] == 255 && rgba[center + 2] == 255),
-            "中心不应该是纯白"
+            ratio > 0.2,
+            "不透明像素只有 {:.1}%，图标会显得很小",
+            ratio * 100.0
         );
-        // 透明像素应当占相当比例（圆角/图形外缘），否则说明贴图没生效
-        let transparent = (0..32 * 32).filter(|i| rgba[i * 4 + 3] == 0).count();
-        assert!(transparent > 100, "透明像素太少：{transparent}");
+
+        // 四周应当有留白（不是把整张图拉满），否则贴边会很难看
+        assert_eq!(rgba[3], 0, "上边框应当留白");
+        assert_eq!(rgba[(31 * 32) * 4 + 3], 0, "左下角应当留白");
     }
 
     #[test]

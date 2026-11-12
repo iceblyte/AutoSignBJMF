@@ -68,10 +68,21 @@ pub enum Overlay {
     TimePicker,
 }
 
+/// 当前展开了哪个下拉列表（同一时刻只允许一个）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OpenSelect {
+    None,
+    RetryAttempts,
+    RetryDelay,
+    /// 时间选择器里的小时列表
+    Hour,
+    /// 时间选择器里的分钟列表
+    Minute,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SettingsTab {
     General,
-    Notify,
     Data,
     About,
 }
@@ -97,6 +108,10 @@ pub struct AppView {
     /// 时间选择器里当前选中的时 / 分
     pub picker_hour: u32,
     pub picker_minute: u32,
+    /// 当前展开的下拉（重试次数 / 重试间隔 / 时 / 分）
+    pub open_select: OpenSelect,
+    /// 日志区的滚动位置（日志多了要能翻）
+    pub log_scroll: ScrollHandle,
     focus: Vec<FocusHandle>,
     /// 关窗提示勾了「不再提示」
     pub close_hint_muted: bool,
@@ -147,7 +162,22 @@ impl AppView {
             .detach();
         }
 
-        Self {
+        // QA 回归用：AUTOSIGN_TEST_COPY=1 启动 2 秒后自动复制日志，
+        // 用来验证中文不再乱码（外部用 Get-Clipboard 读回比对）。
+        if std::env::var("AUTOSIGN_TEST_COPY").is_ok() {
+            cx.spawn(async move |this, cx| {
+                cx.background_executor()
+                    .timer(std::time::Duration::from_secs(2))
+                    .await;
+                let _ = this.update(cx, |view, cx| {
+                    view.copy_logs();
+                    cx.notify();
+                });
+            })
+            .detach();
+        }
+
+        let mut view = Self {
             state,
             runtime,
             dark,
@@ -161,10 +191,24 @@ impl AppView {
             qr_error: None,
             picker_hour,
             picker_minute,
+            open_select: OpenSelect::None,
+            log_scroll: ScrollHandle::new(),
             focus,
             close_hint_muted: false,
             close_signal: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        };
+
+        // 截图/QA：AUTOSIGN_PICKER=hour|minute|attempts|delay 直接把对应下拉展开
+        if let Ok(kind) = std::env::var("AUTOSIGN_PICKER") {
+            view.open_select = match kind.as_str() {
+                "hour" => OpenSelect::Hour,
+                "minute" => OpenSelect::Minute,
+                "attempts" => OpenSelect::RetryAttempts,
+                "delay" => OpenSelect::RetryDelay,
+                _ => OpenSelect::None,
+            };
         }
+        view
     }
 
     /// 每秒把调度线程的状态与日志搬进界面。
@@ -195,8 +239,13 @@ impl AppView {
         self.state.paused = paused;
         self.state.next_run_at = next;
         self.state.last_exit = last_exit;
+        let before = self.state.logs.len();
         for (kind, line) in self.runtime.drain() {
             self.state.log(kind, line);
+        }
+        if self.state.logs.len() != before {
+            // 有新日志就跟着滚到底，不然用户得自己往下翻
+            self.log_scroll.scroll_to_bottom();
         }
         if matches!(self.overlay, Overlay::Qr) {
             crate::ui::qr_modal::poll(self);
@@ -312,6 +361,55 @@ impl AppView {
         self.state.log(LogKind::Info, "正在获取登录二维码…");
         self.qr = Some(crate::ui::qr_modal::start(self.state.paths.config_file()));
         cx.notify();
+    }
+
+    /// 把当前日志复制到剪贴板（Win32 Unicode，中文不会乱码）。
+    pub fn copy_logs(&mut self) {
+        let text = self
+            .state
+            .logs
+            .iter()
+            .map(|line| format!("{}  {}", line.time, line.text))
+            .collect::<Vec<_>>()
+            .join("\r\n");
+        if text.is_empty() {
+            return;
+        }
+        match set_clipboard_text(&text) {
+            Ok(()) => self.state.log(LogKind::Info, "日志已复制到剪贴板"),
+            Err(_) => self
+                .state
+                .log(LogKind::Bad, "复制失败：剪贴板被其它程序占用"),
+        }
+    }
+
+    /// 清空界面日志，同时把今天的日志文件清掉（否则重启又回来了）。
+    pub fn clear_logs(&mut self) {
+        self.state.logs.clear();
+        let path = self.state.log_file();
+        let _ = std::fs::OpenOptions::new()
+            .write(true)
+            .truncate(true)
+            .open(&path);
+    }
+
+    /// 点通知开关：已配置就清空 Key（关掉渠道），未配置就聚焦输入框。
+    fn toggle_notify(&mut self, field: Field, window: &mut Window, cx: &mut Context<Self>) {
+        let (current, name) = match field {
+            Field::Wx => (self.state.draft.wx_key.clone(), "微信通知"),
+            _ => (self.state.draft.qq_key.clone(), "QQ 通知"),
+        };
+        if current.trim().is_empty() {
+            window.focus(&self.focus[field.index()], cx);
+            self.state
+                .log(LogKind::Info, format!("填入 {name} 的 Key 后会自动启用"));
+        } else {
+            self.set_value(field, String::new());
+            self.state.log(
+                LogKind::Warn,
+                format!("已关闭{name}：Key 已清空，填回去即可重新启用"),
+            );
+        }
     }
 
     /// 导出到指定路径。（文件对话框回来后调用；也是单测入口）
@@ -827,7 +925,14 @@ impl AppView {
         } else {
             header
                 .child(
-                    button("暂停", BtnKind::Default, BtnSize::Small, false, p)
+                    // 文案跟着状态走：暂停中显示「恢复」，否则显示「暂停」
+                    button(
+                        if self.state.paused { "恢复" } else { "暂停" },
+                        BtnKind::Default,
+                        BtnSize::Small,
+                        false,
+                        p,
+                    )
                         .id("toggle-pause")
                         .cursor_pointer()
                         .on_click(cx.listener(|this, _, _, cx| {
@@ -991,18 +1096,26 @@ impl AppView {
                             .items_end()
                             .gap(px(8.0))
                             .child(field_block_with_switch(
-                                "微信通知 · Server 酱",
-                                !self.state.draft.wx_key.trim().is_empty(),
+                                notify_header(
+                                    "微信通知 · Server 酱",
+                                    !self.state.draft.wx_key.trim().is_empty(),
+                                    Field::Wx,
+                                    readonly,
+                                    p,
+                                    cx,
+                                ),
                                 wx,
-                                p,
-                                readonly,
                             ))
                             .child(field_block_with_switch(
-                                "QQ 通知 · Qmsg 酱",
-                                !self.state.draft.qq_key.trim().is_empty(),
+                                notify_header(
+                                    "QQ 通知 · Qmsg 酱",
+                                    !self.state.draft.qq_key.trim().is_empty(),
+                                    Field::Qq,
+                                    readonly,
+                                    p,
+                                    cx,
+                                ),
                                 qq,
-                                p,
-                                readonly,
                             )),
                     ),
             )
@@ -1049,14 +1162,51 @@ impl AppView {
                         crate::ui::time_picker::default_pick(&this.state.settings.times);
                     this.picker_hour = hour;
                     this.picker_minute = minute;
+                    this.open_select = OpenSelect::None;
                     this.overlay = Overlay::TimePicker;
                     cx.notify();
                 }))
                 .into_any_element()
         });
 
-        let attempts = self.text_field(Field::RetryAttempts, true, readonly, p, cx);
-        let delay = self.text_field(Field::RetryDelay, true, readonly, p, cx);
+        // 重试次数与间隔都改成下拉点选，不再手输数字
+        let attempts_value = self.state.settings.retry_attempts;
+        let delay_value = self.state.settings.retry_delay_minutes;
+        let open_attempts = self.open_select == OpenSelect::RetryAttempts;
+        let open_delay = self.open_select == OpenSelect::RetryDelay;
+
+        let attempts = select_trigger(
+            format!("{attempts_value}"),
+            open_attempts,
+            62.0,
+            "retry-attempts",
+            readonly,
+            p,
+            cx,
+            |this| {
+                this.open_select = if this.open_select == OpenSelect::RetryAttempts {
+                    OpenSelect::None
+                } else {
+                    OpenSelect::RetryAttempts
+                };
+            },
+        );
+        let delay = select_trigger(
+            format!("{delay_value}"),
+            open_delay,
+            62.0,
+            "retry-delay",
+            readonly,
+            p,
+            cx,
+            |this| {
+                this.open_select = if this.open_select == OpenSelect::RetryDelay {
+                    OpenSelect::None
+                } else {
+                    OpenSelect::RetryDelay
+                };
+            },
+        );
 
         let mut panel = div()
             .flex_none()
@@ -1089,38 +1239,79 @@ impl AppView {
                         div()
                             .flex()
                             .w_full()
-                            .items_center()
-                            .gap(px(7.0))
-                            .pt(px(9.0))
-                            .border_t_1()
-                            .border_color(rgb(p.line))
+                            .flex_col()
+                            .gap(px(6.0))
                             .child(
                                 div()
-                                    .text_size(px(12.0))
-                                    .text_color(rgb(p.text_2))
-                                    .child("失败重试"),
+                                    .flex()
+                                    .w_full()
+                                    .items_center()
+                                    .gap(px(7.0))
+                                    .pt(px(9.0))
+                                    .border_t_1()
+                                    .border_color(rgb(p.line))
+                                    .child(
+                                        div()
+                                            .text_size(px(12.0))
+                                            .text_color(rgb(p.text_2))
+                                            .child("失败重试"),
+                                    )
+                                    .child(attempts)
+                                    .child(
+                                        div()
+                                            .text_size(px(12.0))
+                                            .text_color(rgb(p.text_2))
+                                            .child("次，间隔"),
+                                    )
+                                    .child(delay)
+                                    .child(
+                                        div()
+                                            .text_size(px(12.0))
+                                            .text_color(rgb(p.text_2))
+                                            .child("分钟"),
+                                    )
+                                    .child(div().flex_1())
+                                    .child(
+                                        div()
+                                            .text_size(px(11.5))
+                                            .text_color(rgb(p.text_3))
+                                            .child("1–10 次 · 1–60 分钟"),
+                                    ),
                             )
-                            .child(narrow_field(attempts, p))
-                            .child(
-                                div()
-                                    .text_size(px(12.0))
-                                    .text_color(rgb(p.text_2))
-                                    .child("次，间隔"),
-                            )
-                            .child(narrow_field(delay, p))
-                            .child(
-                                div()
-                                    .text_size(px(12.0))
-                                    .text_color(rgb(p.text_2))
-                                    .child("分钟"),
-                            )
-                            .child(div().flex_1())
-                            .child(
-                                div()
-                                    .text_size(px(11.5))
-                                    .text_color(rgb(p.text_3))
-                                    .child("1–10 次 · 1–60 分钟"),
-                            ),
+                            .when(open_attempts, |row| {
+                                row.child(option_row(
+                                    (1..=10u32)
+                                        .map(|n| (n.to_string(), n == attempts_value))
+                                        .collect(),
+                                    "retry-attempts-opt",
+                                    p,
+                                    cx,
+                                    |this, picked| {
+                                        if let Ok(value) = picked.parse::<u32>() {
+                                            let _ = this.state.set_retry_attempts(value);
+                                        }
+                                        this.open_select = OpenSelect::None;
+                                    },
+                                ))
+                            })
+                            .when(open_delay, |row| {
+                                row.child(option_row(
+                                    // 间隔给常用值，避免 60 个块把面板撑爆
+                                    [1u32, 2, 3, 5, 10, 15, 20, 30, 45, 60]
+                                        .into_iter()
+                                        .map(|n| (n.to_string(), n == delay_value))
+                                        .collect(),
+                                    "retry-delay-opt",
+                                    p,
+                                    cx,
+                                    |this, picked| {
+                                        if let Ok(value) = picked.parse::<u32>() {
+                                            let _ = this.state.set_retry_delay(value);
+                                        }
+                                        this.open_select = OpenSelect::None;
+                                    },
+                                ))
+                            }),
                     ),
             );
 
@@ -1130,17 +1321,20 @@ impl AppView {
 
     fn render_log_panel(&self, p: &Palette, cx: &mut Context<Self>) -> AnyElement {
         let mut lines = div()
+            .id("log-scroll")
             .flex()
             .flex_col()
             .w_full()
             .flex_1()
             .min_h_0()
-            .overflow_hidden()
+            .overflow_y_scroll()
+            .track_scroll(&self.log_scroll)
             .px(px(13.0))
             .py(px(10.0))
             .bg(rgb(p.surface_2));
 
-        let start = self.state.logs.len().saturating_sub(40);
+        // 保留最近 200 条，超出的靠滚动看
+        let start = self.state.logs.len().saturating_sub(200);
         if self.state.logs.is_empty() {
             lines = lines.child(
                 div()
@@ -1203,17 +1397,7 @@ impl AppView {
                                 .text_color(rgb(p.accent))
                                 .child("复制")
                                 .on_click(cx.listener(|this, _, _, cx| {
-                                    let text = this
-                                        .state
-                                        .logs
-                                        .iter()
-                                        .map(|line| format!("{}  {}", line.time, line.text))
-                                        .collect::<Vec<_>>()
-                                        .join("\n");
-                                    if let Ok(mut clipboard) = arboard_set(&text) {
-                                        this.state.log(LogKind::Info, "日志已复制到剪贴板");
-                                        let _ = clipboard;
-                                    }
+                                    this.copy_logs();
                                     cx.notify();
                                 })),
                         )
@@ -1225,7 +1409,7 @@ impl AppView {
                                 .text_color(rgb(p.text_3))
                                 .child("清空")
                                 .on_click(cx.listener(|this, _, _, cx| {
-                                    this.state.logs.clear();
+                                    this.clear_logs();
                                     cx.notify();
                                 })),
                         )
@@ -1629,37 +1813,132 @@ fn field_block(title: impl Into<SharedString>, input: AnyElement, p: &Palette) -
 }
 
 /// 标签前带开关的输入框列。
-fn field_block_with_switch(
+/// 通知渠道的标题行：开关 + 名称，整行可点。
+///
+/// 开关状态就是「Key 是否非空」，所以点它等于：已配置 → 清空 Key（关掉渠道）；
+/// 未配置 → 聚焦输入框，让用户去填。
+fn notify_header(
     title: &'static str,
     checked: bool,
-    input: AnyElement,
+    field: Field,
+    readonly: bool,
     p: &Palette,
-    _readonly: bool,
+    cx: &mut Context<AppView>,
 ) -> AnyElement {
+    let mut header = div()
+        .id(SharedString::from(format!("notify-switch-{title}")))
+        .flex()
+        .items_center()
+        .gap(px(6.0))
+        .child(switch(checked, readonly, p))
+        .child(
+            div()
+                .text_size(px(12.0))
+                .text_color(rgb(p.text_2))
+                .child(title),
+        );
+
+    if !readonly {
+        header = header
+            .cursor_pointer()
+            .hover(|style| style.opacity(0.8))
+            .on_click(cx.listener(move |this, _, window, cx| {
+                this.toggle_notify(field, window, cx);
+            }));
+    }
+    header.into_any_element()
+}
+
+/// 带开关标题的输入块。标题行由调用方构造（开关要能点）。
+fn field_block_with_switch(header: AnyElement, input: AnyElement) -> AnyElement {
     div()
         .flex()
         .flex_col()
         .gap(px(5.0))
         .flex_1()
         .min_w_0()
-        .child(
-            div()
-                .flex()
-                .items_center()
-                .gap(px(6.0))
-                .child(switch(checked, false, p))
-                .child(
-                    div()
-                        .text_size(px(12.0))
-                        .text_color(rgb(p.text_2))
-                        .child(title),
-                ),
-        )
+        .child(header)
         .child(input)
         .into_any_element()
 }
 
-/// 窄输入框（重试次数 / 间隔）。
+/// 下拉触发器：外观像输入框，右侧一个 ▾，点开后在下方展开选项行。
+fn select_trigger(
+    value: String,
+    open: bool,
+    width: f32,
+    id: &'static str,
+    readonly: bool,
+    p: &Palette,
+    cx: &mut Context<AppView>,
+    on_toggle: impl Fn(&mut AppView) + 'static,
+) -> AnyElement {
+    let mut trigger = div()
+        .id(SharedString::from(format!("select-{id}")))
+        .w(px(width))
+        .h(px(30.0))
+        .flex_none()
+        .flex()
+        .items_center()
+        .gap(px(2.0))
+        .px(px(8.0))
+        .rounded(px(7.0))
+        .border_1()
+        .border_color(rgb(if open { p.accent } else { p.line_2 }))
+        .bg(rgb(p.surface))
+        .text_size(px(12.0))
+        .text_color(rgb(p.text))
+        .child(div().flex_1().child(value))
+        .child(
+            div()
+                .text_size(px(9.0))
+                .text_color(rgb(p.text_3))
+                .child(if open { "▲" } else { "▼" }),
+        );
+
+    if !readonly {
+        trigger = trigger
+            .cursor_pointer()
+            .hover(|style| style.border_color(rgb(p.text_3)))
+            .on_click(cx.listener(move |this, _, _, cx| {
+                on_toggle(this);
+                cx.notify();
+            }));
+    }
+    trigger.into_any_element()
+}
+
+/// 展开的选项行：自动换行的一组 chip，选中项是强调色实底。
+fn option_row(
+    items: Vec<(String, bool)>,
+    prefix: &'static str,
+    p: &Palette,
+    cx: &mut Context<AppView>,
+    on_pick: impl Fn(&mut AppView, String) + 'static,
+) -> AnyElement {
+    let on_pick = std::rc::Rc::new(on_pick);
+    let mut row = div().flex().w_full().flex_wrap().gap(px(4.0));
+
+    for (value, selected) in items {
+        let id = SharedString::from(format!("{prefix}-{value}"));
+        let chip = choice_chip(value.clone(), selected, 44.0, p);
+        row = row.child(if selected {
+            chip.into_any_element()
+        } else {
+            let callback = on_pick.clone();
+            let picked = value.clone();
+            chip.id(id)
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    callback(this, picked.clone());
+                    cx.notify();
+                }))
+                .into_any_element()
+        });
+    }
+    row.into_any_element()
+}
+
+/// 窄输入框（保留给以后可能的手输场景）。
 fn narrow_field(input: AnyElement, _p: &Palette) -> AnyElement {
     div().w(px(56.0)).flex_none().child(input).into_any_element()
 }
@@ -1688,18 +1967,45 @@ pub(crate) fn open_url(target: &str) -> std::io::Result<()> {
         .map(|_| ())
 }
 
-/// 复制到剪贴板（走 PowerShell，避免额外依赖）。
-fn arboard_set(text: &str) -> std::io::Result<()> {
-    use std::io::Write;
-    use std::process::Stdio;
-    let mut child = hidden_command("powershell")
-        .args(["-NoProfile", "-Command", "$input | Set-Clipboard"])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()?;
-    if let Some(stdin) = child.stdin.as_mut() {
-        stdin.write_all(text.as_bytes())?;
+/// 复制文本到剪贴板（Win32 直写 CF_UNICODETEXT）。
+///
+/// 之前走 `powershell -Command "$input | Set-Clipboard"`，中文会乱码：
+/// PowerShell 从 stdin 读文本时按控制台的 OEM/ANSI 代码页解码，而我们写进去的是 UTF-8。
+/// 直接用 Unicode 剪贴板格式既没有编码问题，也不用起子进程。
+fn set_clipboard_text(text: &str) -> std::io::Result<()> {
+    use windows_sys::Win32::System::DataExchange::{
+        CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData,
+    };
+    use windows_sys::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE};
+    use windows_sys::Win32::System::Ole::CF_UNICODETEXT;
+
+    // 以 0 结尾的 UTF-16，字节数而不是字符数
+    let wide: Vec<u16> = text.encode_utf16().chain(std::iter::once(0)).collect();
+    let bytes = wide.len() * std::mem::size_of::<u16>();
+
+    unsafe {
+        if OpenClipboard(std::ptr::null_mut()) == 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        EmptyClipboard();
+        let handle = GlobalAlloc(GMEM_MOVEABLE, bytes);
+        if handle.is_null() {
+            CloseClipboard();
+            return Err(std::io::Error::last_os_error());
+        }
+        let target = GlobalLock(handle) as *mut u16;
+        if target.is_null() {
+            CloseClipboard();
+            return Err(std::io::Error::last_os_error());
+        }
+        std::ptr::copy_nonoverlapping(wide.as_ptr(), target, wide.len());
+        GlobalUnlock(handle);
+        // 成功后内存归系统所有，不能自己释放
+        if SetClipboardData(CF_UNICODETEXT as u32, handle).is_null() {
+            CloseClipboard();
+            return Err(std::io::Error::last_os_error());
+        }
+        CloseClipboard();
     }
     Ok(())
 }

@@ -47,7 +47,12 @@ fn main() {
     let _ = paths.ensure();
     let config_path = paths.config_file();
     let settings_path = paths.settings_file();
-    let state = AppState::load(paths);
+    let mut state = AppState::load(paths);
+    // 记一条启动日志：落盘后用户下次打开还能看到上次什么时候跑过
+    state.log(
+        crate::state::LogKind::Info,
+        format!("程序启动，共 {} 个账号", state.config.students.len()),
+    );
 
     // 后台：调度线程 + 托盘
     let runtime = Arc::new(Runtime::start(

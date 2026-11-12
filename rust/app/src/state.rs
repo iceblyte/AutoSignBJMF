@@ -28,6 +28,40 @@ pub enum LogKind {
     Bad,
 }
 
+impl LogKind {
+    /// 落盘时用的级别标记。
+    pub fn label(self) -> &'static str {
+        match self {
+            LogKind::Info => "INFO",
+            LogKind::Ok => "OK",
+            LogKind::Warn => "WARN",
+            LogKind::Bad => "BAD",
+        }
+    }
+
+    /// 从落盘文件里读回。
+    pub fn from_label(text: &str) -> LogKind {
+        match text {
+            "OK" => LogKind::Ok,
+            "WARN" => LogKind::Warn,
+            "BAD" => LogKind::Bad,
+            _ => LogKind::Info,
+        }
+    }
+}
+
+/// 解析一行落盘日志：`HH:MM:SS [KIND] text`。格式不对就丢掉。
+fn parse_log_line(line: &str) -> Option<LogLine> {
+    let (time, rest) = line.split_once(' ')?;
+    let rest = rest.strip_prefix('[')?;
+    let (kind, text) = rest.split_once("] ")?;
+    Some(LogLine {
+        time: time.to_string(),
+        kind: LogKind::from_label(kind),
+        text: text.to_string(),
+    })
+}
+
 /// 一行日志。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LogLine {
@@ -225,6 +259,8 @@ impl AppState {
                 acc: settings.acc.clone(),
                 ..Draft::default()
             });
+        // 启动时接上今天已经写下的日志（最近 200 行）
+        let logs = Self::load_recent_logs(&paths, 200);
         Self {
             paths,
             config,
@@ -234,7 +270,7 @@ impl AppState {
             paused: false,
             next_run_at: None,
             last_exit: None,
-            logs: Vec::new(),
+            logs,
             draft,
             dirty: false,
             theme: ThemeMode::System,
@@ -326,6 +362,24 @@ impl AppState {
         }
         self.settings.times.push(value);
         self.settings.times.sort();
+        self.settings
+            .save(self.paths.settings_file())
+            .map_err(|error| FieldError(format!("保存设置失败：{error}")))
+    }
+
+    /// 改失败重试次数（1–10，超界收敛到边界）。
+    pub fn set_retry_attempts(&mut self, value: u32) -> Result<(), FieldError> {
+        let clamped = value.clamp(1, 10);
+        self.settings.retry_attempts = clamped;
+        self.settings
+            .save(self.paths.settings_file())
+            .map_err(|error| FieldError(format!("保存设置失败：{error}")))
+    }
+
+    /// 改失败重试间隔（1–60 分钟）。
+    pub fn set_retry_delay(&mut self, value: u32) -> Result<(), FieldError> {
+        let clamped = value.clamp(1, 60);
+        self.settings.retry_delay_minutes = clamped;
         self.settings
             .save(self.paths.settings_file())
             .map_err(|error| FieldError(format!("保存设置失败：{error}")))
@@ -463,15 +517,59 @@ impl AppState {
 
     /// 追加一行日志，最多留 600 行（原型日志面板是定高的）。
     pub fn log(&mut self, kind: LogKind, text: impl Into<String>) {
+        let text = text.into();
+        let time = Local::now().format("%H:%M:%S").to_string();
+        self.append_to_file(&time, kind, &text);
         self.logs.push(LogLine {
-            time: Local::now().format("%H:%M:%S").to_string(),
-            text: text.into(),
+            time,
+            text,
             kind,
         });
         let overflow = self.logs.len().saturating_sub(600);
         if overflow > 0 {
             self.logs.drain(0..overflow);
         }
+    }
+
+    /// 今天的日志文件：`<数据目录>/logs/app-YYYY-MM-DD.log`。
+    pub fn log_file(&self) -> std::path::PathBuf {
+        self.paths
+            .log_dir()
+            .join(format!("app-{}.log", Local::now().format("%Y-%m-%d")))
+    }
+
+    /// 追加一行到日志文件。写失败不影响界面（日志是辅助信息）。
+    fn append_to_file(&self, time: &str, kind: LogKind, text: &str) {
+        use std::io::Write;
+        let path = self.log_file();
+        if let Some(dir) = path.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        if let Ok(mut file) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+        {
+            let _ = writeln!(file, "{time} [{}] {text}", kind.label());
+        }
+    }
+
+    /// 读回今天的日志（启动时把上次运行的最后几行接上）。
+    fn load_recent_logs(paths: &Paths, limit: usize) -> Vec<LogLine> {
+        let path = paths
+            .log_dir()
+            .join(format!("app-{}.log", Local::now().format("%Y-%m-%d")));
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            return Vec::new();
+        };
+        let mut lines: Vec<LogLine> = text
+            .lines()
+            .filter_map(parse_log_line)
+            .collect();
+        if lines.len() > limit {
+            lines.drain(0..lines.len() - limit);
+        }
+        lines
     }
 
     /// 把执行结果写进状态：失败记到 `failed`，凭证失效记到 `needs_login`。
