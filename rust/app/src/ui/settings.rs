@@ -430,7 +430,7 @@ fn data(view: &mut AppView, p: &Palette, cx: &mut Context<AppView>) -> AnyElemen
                         .id("export-config")
                         .cursor_pointer()
                         .on_click(cx.listener(|view, _, _, cx| {
-                            view.export_config();
+                            view.export_config(cx);
                             cx.notify();
                         })),
                 )
@@ -439,7 +439,7 @@ fn data(view: &mut AppView, p: &Palette, cx: &mut Context<AppView>) -> AnyElemen
                         .id("import-config-settings")
                         .cursor_pointer()
                         .on_click(cx.listener(|view, _, _, cx| {
-                            view.import_config();
+                            view.import_config(cx);
                             cx.notify();
                         })),
                 ),

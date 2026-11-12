@@ -58,38 +58,21 @@ pub struct TrayIds {
     pub quit: String,
 }
 
-/// 生成图标位图：蓝底圆角 + 白色对勾（与托盘截图一致，不依赖外部资源）。
+/// 托盘图标：程序 logo 的 32×32 位图。
+///
+/// 由 `rust/_tools/make_tray_icon.py` 从 `design/v2/assets/logo.png` 生成
+/// （alpha 预乘缩放 + 四周留白），直接以原始 RGBA 嵌进二进制，运行时不依赖外部资源。
+const TRAY_RGBA: &[u8] = include_bytes!("../../assets/tray-32.rgba");
+const TRAY_SIZE: u32 = 32;
+
+/// 返回图标位图（RGBA 顺序，行优先）。
 pub fn icon_rgba() -> (Vec<u8>, u32, u32) {
-    const S: usize = 32;
-    let mut buffer = vec![0u8; S * S * 4];
-    let radius = 7.0f32;
-    for y in 0..S {
-        for x in 0..S {
-            let fx = x as f32 + 0.5;
-            let fy = y as f32 + 0.5;
-            let cx = fx.clamp(radius, S as f32 - radius);
-            let cy = fy.clamp(radius, S as f32 - radius);
-            let distance = ((fx - cx).powi(2) + (fy - cy).powi(2)).sqrt();
-            if distance > radius {
-                continue;
-            }
-            let index = (y * S + x) * 4;
-            let segment = |ax: f32, ay: f32, bx: f32, by: f32| {
-                let (px, py) = (fx - ax, fy - ay);
-                let (vx, vy) = (bx - ax, by - ay);
-                let t = ((px * vx + py * vy) / (vx * vx + vy * vy)).clamp(0.0, 1.0);
-                ((px - t * vx).powi(2) + (py - t * vy).powi(2)).sqrt()
-            };
-            let on_check =
-                segment(9.0, 17.0, 14.0, 22.0) < 2.0 || segment(14.0, 22.0, 23.0, 11.0) < 2.0;
-            if on_check {
-                buffer[index..index + 4].copy_from_slice(&[255, 255, 255, 255]);
-            } else {
-                buffer[index..index + 4].copy_from_slice(&[0x25, 0x63, 0xeb, 255]);
-            }
-        }
-    }
-    (buffer, S as u32, S as u32)
+    debug_assert_eq!(
+        TRAY_RGBA.len(),
+        (TRAY_SIZE * TRAY_SIZE * 4) as usize,
+        "托盘位图尺寸不对，重新跑 rust/_tools/make_tray_icon.py"
+    );
+    (TRAY_RGBA.to_vec(), TRAY_SIZE, TRAY_SIZE)
 }
 
 /// 起托盘线程。`shared` 里的字段被菜单直接改写。
@@ -314,13 +297,20 @@ mod tests {
     }
 
     #[test]
-    fn 图标四角透明中心有颜色() {
+    fn 图标是_logo_的形状而不是纯色方块() {
         let (rgba, _, _) = icon_rgba();
-        // 左上角在圆角外 → alpha 0
-        assert_eq!(rgba[3], 0);
-        // 中心是勾或底色，alpha 255
+        // logo 四周透明，左上角应当是空的
+        assert_eq!(rgba[3], 0, "左上角应当透明");
+        // 中心落在 logo 主体上，有不透明度且不是纯白（是 logo 的蓝色）
         let center = (16 * 32 + 16) * 4;
-        assert_eq!(rgba[center + 3], 255);
+        assert!(rgba[center + 3] > 200, "中心应当基本不透明");
+        assert!(
+            !(rgba[center] == 255 && rgba[center + 1] == 255 && rgba[center + 2] == 255),
+            "中心不应该是纯白"
+        );
+        // 透明像素应当占相当比例（圆角/图形外缘），否则说明贴图没生效
+        let transparent = (0..32 * 32).filter(|i| rgba[i * 4 + 3] == 0).count();
+        assert!(transparent > 100, "透明像素太少：{transparent}");
     }
 
     #[test]

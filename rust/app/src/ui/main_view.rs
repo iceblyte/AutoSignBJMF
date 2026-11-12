@@ -64,6 +64,8 @@ pub enum Overlay {
     Qr,
     Settings(SettingsTab),
     CloseHint,
+    /// 添加执行时间：从列表点选，不手输
+    TimePicker,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -92,6 +94,9 @@ pub struct AppView {
     pub qr: Option<crate::ui::qr_modal::QrHandle>,
     pub qr_image: Option<String>,
     pub qr_error: Option<String>,
+    /// 时间选择器里当前选中的时 / 分
+    pub picker_hour: u32,
+    pub picker_minute: u32,
     focus: Vec<FocusHandle>,
     /// 关窗提示勾了「不再提示」
     pub close_hint_muted: bool,
@@ -109,15 +114,37 @@ impl AppView {
         let focus = (0..Field::ALL.len())
             .map(|_| cx.focus_handle())
             .collect::<Vec<_>>();
+        // 时间选择器的初始值跟着现有时间走，打开就能少点几下
+        let (picker_hour, picker_minute) =
+            crate::ui::time_picker::default_pick(&state.settings.times);
         let mut overlay = Overlay::None;
-        // 截图/QA：AUTOSIGN_OPEN=settings|qr 直接打开对应覆盖层
+        // 截图/QA：AUTOSIGN_OPEN=settings|data|qr|time 直接打开对应覆盖层
         if let Ok(value) = std::env::var("AUTOSIGN_OPEN") {
             overlay = match value.as_str() {
                 "settings" => Overlay::Settings(SettingsTab::General),
                 "data" => Overlay::Settings(SettingsTab::Data),
                 "qr" => Overlay::Qr,
+                "time" => Overlay::TimePicker,
                 _ => Overlay::None,
             };
+        }
+
+        // QA 回归用：AUTOSIGN_TEST_DIALOG=import|export 启动 2 秒后自动弹文件对话框。
+        // 目的是能脚本化验证「对话框打开时主窗口仍然响应」（卡死是历史 bug）。
+        if let Ok(kind) = std::env::var("AUTOSIGN_TEST_DIALOG") {
+            cx.spawn(async move |this, cx| {
+                cx.background_executor()
+                    .timer(std::time::Duration::from_secs(2))
+                    .await;
+                let _ = this.update(cx, |view, cx| {
+                    if kind == "export" {
+                        view.export_config(cx);
+                    } else {
+                        view.import_config(cx);
+                    }
+                });
+            })
+            .detach();
         }
 
         Self {
@@ -132,6 +159,8 @@ impl AppView {
             qr: None,
             qr_image: None,
             qr_error: None,
+            picker_hour,
+            picker_minute,
             focus,
             close_hint_muted: false,
             close_signal: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
@@ -285,18 +314,10 @@ impl AppView {
         cx.notify();
     }
 
-    /// 导出配置：账号 + 设置，不含日志。
-    pub fn export_config(&mut self) {
-        let Some(path) = rfd::FileDialog::new()
-            .set_title("导出配置")
-            .set_file_name("AutoSignBJMF-配置.json")
-            .add_filter("JSON", &["json"])
-            .save_file()
-        else {
-            return;
-        };
-        let text = crate::ui::transfer::export_bundle(&self.state.config, &self.state.settings);
-        match std::fs::write(&path, text) {
+    /// 导出到指定路径。（文件对话框回来后调用；也是单测入口）
+    pub fn apply_export(&mut self, path: &std::path::Path) {
+        match crate::ui::transfer::write_bundle_file(path, &self.state.config, &self.state.settings)
+        {
             Ok(()) => self.state.log(
                 LogKind::Ok,
                 format!("已导出配置到 {}", path.display()),
@@ -307,24 +328,9 @@ impl AppView {
         }
     }
 
-    /// 导入配置：支持本程序导出格式，也支持直接选 Python 版的 data.json。
-    pub fn import_config(&mut self) {
-        let Some(path) = rfd::FileDialog::new()
-            .set_title("导入配置")
-            .add_filter("JSON", &["json"])
-            .pick_file()
-        else {
-            return;
-        };
-        let text = match std::fs::read_to_string(&path) {
-            Ok(text) => text,
-            Err(error) => {
-                self.state
-                    .log(LogKind::Bad, format!("读取文件失败：{error}"));
-                return;
-            }
-        };
-        let (config, settings) = match crate::ui::transfer::import_bundle(&text) {
+    /// 从指定文件导入。（文件对话框回来后调用；也是单测入口）
+    pub fn apply_import(&mut self, path: &std::path::Path) {
+        let (config, settings) = match crate::ui::transfer::read_bundle_file(path) {
             Ok(pair) => pair,
             Err(error) => {
                 self.error = Some(error.clone());
@@ -347,7 +353,54 @@ impl AppView {
         self.state.settings = settings;
         self.state.selected = 0;
         self.state.reload_draft();
+        self.error = None;
         self.state.log(LogKind::Ok, format!("已导入配置：{summary}"));
+    }
+
+    /// 导出配置：账号 + 设置，不含日志。
+    ///
+    /// 对话框必须走 async 版本：`rfd::FileDialog` 是同步模态，它会在**调用线程**上
+    /// 起自己的消息循环，而这个线程正是 GPUI 的渲染线程 —— 一旦进来，
+    /// gpui 的窗口过程会重入到已借用的 App 状态，整程序卡死（任务管理器都结束不掉）。
+    /// `AsyncFileDialog` 把对话框放到 rfd 自己开的线程里，界面照常响应。
+    pub fn export_config(&mut self, cx: &mut Context<Self>) {
+        cx.spawn(async move |this, cx| {
+            let Some(file) = rfd::AsyncFileDialog::new()
+                .set_title("导出配置")
+                .set_file_name("AutoSignBJMF-配置.json")
+                .add_filter("JSON", &["json"])
+                .save_file()
+                .await
+            else {
+                return;
+            };
+            let path = file.path().to_path_buf();
+            let _ = this.update(cx, |view, cx| {
+                view.apply_export(&path);
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// 导入配置：支持本程序导出格式，也支持直接选 Python 版的 data.json。
+    pub fn import_config(&mut self, cx: &mut Context<Self>) {
+        cx.spawn(async move |this, cx| {
+            let Some(file) = rfd::AsyncFileDialog::new()
+                .set_title("导入配置")
+                .add_filter("JSON", &["json"])
+                .pick_file()
+                .await
+            else {
+                return;
+            };
+            let path = file.path().to_path_buf();
+            let _ = this.update(cx, |view, cx| {
+                view.apply_import(&path);
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     /// 删除当前账号（连同 Cookie 一起从 data.json 里去掉）。
@@ -990,9 +1043,13 @@ impl AppView {
             chip_add("＋ 添加", p)
                 .id("add-time")
                 .cursor_pointer()
-                .on_click(cx.listener(|this, _, window, cx| {
-                    this.active = Some(Field::AddTime);
-                    window.focus(&this.focus[Field::AddTime.index()], cx);
+                .on_click(cx.listener(|this, _, _window, cx| {
+                    // 不再让用户手打 21:31:00，直接弹时间列表点选
+                    let (hour, minute) =
+                        crate::ui::time_picker::default_pick(&this.state.settings.times);
+                    this.picker_hour = hour;
+                    this.picker_minute = minute;
+                    this.overlay = Overlay::TimePicker;
                     cx.notify();
                 }))
                 .into_any_element()
@@ -1067,30 +1124,7 @@ impl AppView {
                     ),
             );
 
-        if self.active == Some(Field::AddTime) {
-            let input = self.text_field(Field::AddTime, true, false, p, cx);
-            panel = panel.child(
-                div()
-                    .px(px(12.0))
-                    .pb(px(12.0))
-                    .flex()
-                    .items_center()
-                    .gap(px(7.0))
-                    .child(
-                        div()
-                            .text_size(px(11.5))
-                            .text_color(rgb(p.text_3))
-                            .child("新增时间点"),
-                    )
-                    .child(narrow_field_wide(input, p))
-                    .child(
-                        div()
-                            .text_size(px(11.5))
-                            .text_color(rgb(p.text_3))
-                            .child("回车确认"),
-                    ),
-            );
-        }
+        // 注：时间点不再用文本输入（见 ui/time_picker.rs），这里不再渲染「新增时间点」行。
         panel.into_any_element()
     }
 
@@ -1411,7 +1445,7 @@ impl AppView {
                                             .id("import-config")
                                             .cursor_pointer()
                                             .on_click(cx.listener(|this, _, _, cx| {
-                                                this.import_config();
+                                                this.import_config(cx);
                                                 cx.notify();
                                             })),
                                     ),
@@ -1694,6 +1728,7 @@ impl Render for AppView {
             Overlay::CloseHint => root = root.child(self.render_close_hint(p, cx)),
             Overlay::Qr => root = root.child(crate::ui::qr_modal::render(self, p, cx)),
             Overlay::Settings(_) => root = root.child(crate::ui::settings::render(self, p, cx)),
+            Overlay::TimePicker => root = root.child(crate::ui::time_picker::render(self, p, cx)),
             Overlay::None => {}
         }
         root

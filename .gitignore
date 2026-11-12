@@ -68,4 +68,6 @@ selfcheck.txt
 .playwright-mcp/
 
 ## 构建工具（fxc.exe 属于微软 SDK，不再分发；SDK layout 体积很大）
-/rust/_tools/
+/rust/_tools/*
+## 但里面几个排查/生成脚本是有用的，入库
+!/rust/_tools/*.py

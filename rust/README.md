@@ -147,6 +147,18 @@ GPUI 单进程就能同时满足「开窗 55 MB」「关窗后不掉到几百兆
   回归脚本：`python rust/_tools/close_test.py`（拉起 → 发 WM_CLOSE → 断言隐藏且进程存活）
 - 打包：`build/build-rust.ps1`（`-Portable` 额外出一份便携 zip，包内不含任何账号数据）
 
+### 已完成（第七轮）
+
+- **导入 / 导出不再卡死**：`rfd::FileDialog` 是同步模态，它会在**调用线程**上开自己的消息循环，
+  而这个线程就是 GPUI 的渲染线程 —— 对话框一开，gpui 的窗口过程重入到已借用的 App 状态，整个进程无响应
+  （任务管理器都结束不掉）。改用 `rfd::AsyncFileDialog`（rfd 内部另起线程跑对话框）。
+  回归脚本：`python rust/_tools/dialog_test.py`（`AUTOSIGN_TEST_DIALOG=import` 自动弹框，
+  用 `IsHungAppWindow` 断言主窗口未卡死）
+- **托盘图标换成 logo**：`rust/_tools/make_tray_icon.py` 从 `design/v2/assets/logo.png` 生成
+  32×32 RGBA（alpha 预乘缩放 + 6% 留白），以 `include_bytes!` 嵌进二进制，不再是代码画的对勾方块
+- **执行时间改为点选**：新增 `ui/time_picker.rs`，点「＋ 添加」弹面板，小时 6×4、分钟 10×6 网格点选，
+  已存在的时间会被拦下并置灰「添加」；默认值取列表最后一个时间 +1 小时。原来的手输行已移除
+
 ### 已完成（第六轮）
 
 - **双击不再弹控制台**：`main.rs` 加 `#![cfg_attr(all(not(debug_assertions), not(test)), windows_subsystem = "windows")]`，
@@ -228,3 +240,20 @@ AUTOSIGN_DATA_DIR=app/demo cargo run -p bjmf-app   # 用演示数据（3 个账�
 AUTOSIGN_NO_TRAY=1 cargo run -p bjmf-app    # 不起托盘（截图/排查用）
 cargo test --workspace                      # 全部测试
 ```
+
+QA 用的环境变量（只影响开发，不影响正常使用）：
+
+| 变量 | 作用 |
+|---|---|
+| `AUTOSIGN_OPEN=settings\|data\|qr\|time` | 启动后直接打开对应覆盖层，方便截图 |
+| `AUTOSIGN_TEST_DIALOG=import\|export` | 启动 2 秒后自动弹文件对话框，配合 `dialog_test.py` 验证不卡死 |
+| `AUTOSIGN_NO_TRAY=1` | 不创建托盘图标 |
+
+辅助脚本（都不参与产品）：
+
+| 脚本 | 用途 |
+|---|---|
+| `_tools/shot.py <标题> <out.png>` | 不用 Pillow 的窗口截图（ctypes + 自写 PNG） |
+| `_tools/tray_zoom.py x y w h scale out.png` | 放大屏幕某块，用来核托盘图标 |
+| `_tools/dialog_test.py` | 断言文件对话框打开时主窗口仍响应 |
+| `_tools/make_tray_icon.py` | 从 logo 生成 `app/assets/tray-32.rgba` |

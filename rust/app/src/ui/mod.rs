@@ -3,6 +3,7 @@
 pub mod main_view;
 pub mod qr_modal;
 pub mod settings;
+pub mod time_picker;
 pub mod transfer;
 pub mod widgets;
 

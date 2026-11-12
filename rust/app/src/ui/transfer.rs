@@ -6,11 +6,27 @@
 //!
 //! 解析放在这里做成纯函数，文件对话框只负责拿路径。
 
+use std::path::Path;
+
 use bjmf_core::{Config, Settings};
 use serde_json::{json, Value};
 
 /// 当前导出格式版本。以后字段变了就升版本，导入端按版本兼容。
 pub const BUNDLE_VERSION: u32 = 1;
+
+/// 从磁盘读配置包。导出格式与裸 `data.json` 都认。
+///
+/// 单独抽出来是为了可测：界面只负责拿路径与刷新，读文件与解析的失败信息都在这里统一。
+pub fn read_bundle_file(path: &Path) -> Result<(Config, Settings), String> {
+    let text = std::fs::read_to_string(path).map_err(|error| format!("读取文件失败：{error}"))?;
+    import_bundle(&text)
+}
+
+/// 把配置写到磁盘。
+pub fn write_bundle_file(path: &Path, config: &Config, settings: &Settings) -> Result<(), String> {
+    std::fs::write(path, export_bundle(config, settings))
+        .map_err(|error| format!("写入文件失败：{error}"))
+}
 
 /// 把账号与设置打包成一个 JSON 字符串。
 pub fn export_bundle(config: &Config, settings: &Settings) -> String {
@@ -190,6 +206,36 @@ mod tests {
         let text = describe(&config);
         assert!(text.starts_with("7 个账号"));
         assert!(text.ends_with("等"));
+    }
+
+    /// 导出到磁盘再读回来，内容应当一致（走的是真实文件 IO）。
+    #[test]
+    fn 写盘再读回内容一致() {
+        let (config, settings) = sample();
+        let path = std::env::temp_dir().join("bjmf-transfer-roundtrip.json");
+        write_bundle_file(&path, &config, &settings).expect("写盘应当成功");
+
+        let (back, back_settings) = read_bundle_file(&path).expect("读回应当成功");
+        assert_eq!(back.students.len(), config.students.len());
+        assert_eq!(back.students[0].name, config.students[0].name);
+        assert_eq!(back_settings.retry_attempts, settings.retry_attempts);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn 文件不存在时报读取失败() {
+        let path = std::env::temp_dir().join("bjmf-transfer-绝不存在.json");
+        let error = read_bundle_file(&path).unwrap_err();
+        assert!(error.starts_with("读取文件失败"), "实际：{error}");
+    }
+
+    #[test]
+    fn 文件内容不是_json_时报导入失败() {
+        let path = std::env::temp_dir().join("bjmf-transfer-broken.json");
+        std::fs::write(&path, "{ 这不是 json").unwrap();
+        let error = read_bundle_file(&path).unwrap_err();
+        assert!(!error.is_empty());
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]
