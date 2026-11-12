@@ -7,10 +7,49 @@ use std::ffi::c_void;
 
 use windows_sys::Win32::Foundation::RECT;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    EnumWindows, GetWindowRect, GetWindowThreadProcessId, IsWindowVisible, IsZoomed,
-    SetForegroundWindow, ShowWindow, ShowWindowAsync, SW_HIDE, SW_RESTORE, SW_SHOW,
-    SW_SHOWMAXIMIZED,
+    EnumWindows, FindWindowW, GetWindowRect, GetWindowThreadProcessId, IsWindowVisible, IsZoomed,
+    MessageBoxW, SetForegroundWindow, ShowWindow, ShowWindowAsync, MB_ICONINFORMATION, MB_OK,
+    SW_HIDE, SW_RESTORE, SW_SHOW, SW_SHOWMAXIMIZED,
 };
+
+/// 转成 Windows 需要的以 0 结尾的 UTF-16。
+fn wide(text: &str) -> Vec<u16> {
+    text.encode_utf16().chain(std::iter::once(0)).collect()
+}
+
+/// 按标题找到另一个进程的窗口并提到前台。
+///
+/// 单实例冲突时用：用户双击了第二个 exe，应该看到已经开着的那个窗口，
+/// 而不是什么都没有（GUI 子系统下 eprintln 是看不见的）。
+/// 隐藏到托盘的窗口也能被 `FindWindowW` 找到，这里会顺带 `SW_SHOW` 出来。
+pub fn activate_window_by_title(title: &str) -> bool {
+    let title = wide(title);
+    unsafe {
+        let hwnd = FindWindowW(std::ptr::null(), title.as_ptr());
+        if hwnd.is_null() {
+            return false;
+        }
+        let maximized = IsZoomed(hwnd) != 0;
+        ShowWindowAsync(hwnd, if maximized { SW_SHOWMAXIMIZED } else { SW_SHOW });
+        ShowWindow(hwnd, SW_RESTORE);
+        SetForegroundWindow(hwnd);
+        true
+    }
+}
+
+/// 弹一个系统消息框。GUI 子系统下没有控制台，这是唯一能确保用户看见的方式。
+pub fn message_box(caption: &str, text: &str) {
+    let text = wide(text);
+    let caption = wide(caption);
+    unsafe {
+        MessageBoxW(
+            std::ptr::null_mut(),
+            text.as_ptr(),
+            caption.as_ptr(),
+            MB_OK | MB_ICONINFORMATION,
+        );
+    }
+}
 
 /// 窗口矩形。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -127,5 +166,13 @@ mod tests {
         };
         assert_eq!(bounds.width(), 300);
         assert_eq!(bounds.height(), 200);
+    }
+
+    #[test]
+    fn 找不到标题相同的窗口时返回_false() {
+        // 造一个绝不会存在的标题，避免与真实窗口撞名
+        assert!(!activate_window_by_title(
+            "__AutoSignBJMF_不存在的窗口标题__"
+        ));
     }
 }

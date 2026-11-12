@@ -1,5 +1,12 @@
 //! 桌面端入口。
 
+// 双击运行时不弹控制台窗口。
+// release 用 Windows 子系统（无控制台），debug / test 保留控制台，方便看 panic 与测试输出。
+#![cfg_attr(
+    all(not(debug_assertions), not(test)),
+    windows_subsystem = "windows"
+)]
+
 mod assets;
 mod runtime;
 mod state;
@@ -17,10 +24,22 @@ use crate::runtime::Runtime;
 use crate::state::AppState;
 use crate::ui::AppView;
 
+/// 主窗口标题。单实例冲突时靠它找到已运行的窗口。
+pub const WINDOW_TITLE: &str = "班级魔方自动签到";
+
 fn main() {
-    // 单实例：已经有窗口在跑就提示并退出（不重复签到）
+    // 单实例：已经有窗口在跑就把它叫到前面，然后退出（不重复签到）。
+    // 注意这里是 GUI 子系统，println/eprintln 看不到，所以用窗口激活 + MessageBox 兜底。
     let Some(_guard) = system::singleton::SingleInstance::acquire() else {
-        eprintln!("班级魔方自动签到已经在运行，请从托盘图标打开。");
+        #[cfg(debug_assertions)]
+        eprintln!("{WINDOW_TITLE} 已经在运行，请从托盘图标打开。");
+        if !system::win::activate_window_by_title(WINDOW_TITLE) {
+            // 窗口找不到（可能已被隐藏/最小化到托盘），至少给用户一个看得见的提示
+            system::win::message_box(
+                WINDOW_TITLE,
+                "程序已经在运行。\n窗口可能被最小化到了托盘，请在任务栏右下角的托盘图标里找一下。",
+            );
+        }
         return;
     };
 
@@ -43,7 +62,7 @@ fn main() {
             size: size(px(theme::WINDOW_W), px(theme::WINDOW_H)),
         })),
         titlebar: Some(TitlebarOptions {
-            title: Some("班级魔方自动签到".into()),
+            title: Some(WINDOW_TITLE.into()),
             appears_transparent: true,
             traffic_light_position: None,
         }),

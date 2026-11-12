@@ -147,6 +147,14 @@ GPUI 单进程就能同时满足「开窗 55 MB」「关窗后不掉到几百兆
   回归脚本：`python rust/_tools/close_test.py`（拉起 → 发 WM_CLOSE → 断言隐藏且进程存活）
 - 打包：`build/build-rust.ps1`（`-Portable` 额外出一份便携 zip，包内不含任何账号数据）
 
+### 已完成（第六轮）
+
+- **双击不再弹控制台**：`main.rs` 加 `#![cfg_attr(all(not(debug_assertions), not(test)), windows_subsystem = "windows")]`，
+  release 产物的 PE 子系统从 `3 (CUI)` 变成 `2 (GUI)`；debug / test 仍保留控制台，方便看 panic 与测试输出
+- **单实例冲突不再「静默消失」**：GUI 子系统下 `eprintln` 看不见，改成
+  ① 按窗口标题 `FindWindowW` 找到已运行的窗口并 `SW_SHOW + SetForegroundWindow` 提到前台（隐藏到托盘的窗口也能找出来）；
+  ② 万一找不到，弹系统 `MessageBoxW` 说明「程序已在运行，可能在托盘里」
+
 ### 已完成（第五轮）
 
 - **导入 / 导出配置**：`ui/transfer.rs` 负责打包与解析（9 个单测），文件对话框用 `rfd`。
