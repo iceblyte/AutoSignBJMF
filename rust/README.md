@@ -105,7 +105,7 @@ GPUI 单进程就能同时满足「开窗 55 MB」「关窗后不掉到几百兆
 
 - 自绘标题栏需要 `WindowOptions.titlebar.appears_transparent = true`，否则会出现「系统标题栏 + 自绘标题栏」两条。
 - 窗口按钮用 `window_control_area(WindowControlArea::Drag/Min/Max/Close)`，交给系统处理，不要自己写拖拽逻辑。
-- 本机是 GNU 工具链（`x86_64-pc-windows-gnu`），产物依赖已核对过，全是系统 DLL；但正式发布建议切 MSVC 工具链。
+- 默认工具链已是 `stable-x86_64-pc-windows-msvc`（配 LLVM + xwin，见下文「MSVC 工具链」）。GNU 版仍可用 `cargo +stable-x86_64-pc-windows-gnu` 构建。
 
 ---
 
@@ -155,22 +155,51 @@ GPUI 单进程就能同时满足「开窗 55 MB」「关窗后不掉到几百兆
 - **外部命令不再弹黑窗**：统一走 `hidden_command()`（`CREATE_NO_WINDOW`）
 - 不可用的按钮全部置灰（单实例开关标注「始终开启」），不再出现「看着能点其实没反应」
 
-### MSVC 工具链：这台机器上做不了
+### MSVC 工具链：已落地，且没有安装 Visual Studio
 
-`rustup toolchain list` 只有 `stable-x86_64-pc-windows-gnu`，`C://Program Files\Microsoft Visual Studio\2017` 里没有 `link.exe`，
-所以现在切 MSVC 会直接链接失败。要切的话：
+用 LLVM 的工具链 + 官方 VS/SDK 的 CRT 与库拼出一套 MSVC 环境，全部落在 D 盘，不需要管理员、不写 C 盘：
+
+| 组成 | 来源 | 位置 |
+|---|---|---|
+| `clang-cl` / `llvm-ml` / `llvm-lib` | `scoop install llvm`（23.1.5） | `D:\Apps\Scoop\User\apps\llvm\current\bin` |
+| `lld-link`（MSVC 兼容链接器） | 同上 | 同上 |
+| MSVC CRT（`msvcrt.lib` / `libcmt.lib` / 头文件） | VS 2022 17.14 的包，由 `cargo-xwin` 解出 | `D:\Tools\xwin-cache\xwin\crt` |
+| Windows SDK 10.0.26100（`kernel32.lib` / `um` / `ucrt`） | 同上 | `D:\Tools\xwin-cache\xwin\sdk` |
+
+复现步骤：
 
 ```bash
-# 1) 装 C++ 桌面开发（含 MSVC 链接器），约 2–4 GB，需要管理员
-winget install Microsoft.VisualStudio.2022.BuildTools --override "--add Microsoft.VisualStudio.Workload.VCTools --quiet"
-# 2) 装 MSVC 目标的 Rust 标准库
+scoop install llvm                        # 装完重开终端，让 PATH 生效
 rustup toolchain install stable-x86_64-pc-windows-msvc
 rustup default stable-x86_64-pc-windows-msvc
-# 3) 重新构建（release 仍需要 fxc.exe，走同一个 GPUI_FXC_PATH）
-cargo build --release -p bjmf-app
+cargo install cargo-xwin --locked
+export XWIN_CACHE_DIR='D:\Tools\xwin-cache'
+cargo xwin cache xwin                     # 拉 CRT + SDK，约 2.4 GB
 ```
 
-GNU 版能正常用（已实测 10.7 MB / 单文件 / 无 VC++ 运行库依赖），MSVC 只是发布期的规范化，不是功能问题。
+然后 `rust\.cargo\config.toml` 把 MSVC 目标指向 `lld-link`，并用 `INCLUDE` / `LIB` 指到上面两处（已写好，换机器只改路径）。
+需要编译 C 的 crate 通过 `CC_x86_64_pc_windows_msvc=clang-cl`、`AR_...=llvm-lib` 走 clang-cl；`ring` 的汇编由 `llvm-ml` 汇编。
+
+**实测（MSVC 目标，本机）：**
+
+| 指标 | MSVC 版 | GNU 版（上一轮） |
+|---|---|---|
+| release 体积 | **10.41 MB**（动态 CRT）/ **10.56 MB**（静态 CRT） | 10.7 MB |
+| 开窗内存 | **70.9 MB** WS / 100.4 MB Private | 59.4 MB WS / 89.4 MB Private |
+| debug 全量构建 | 6 分 28 秒 | 约 25 秒（增量） |
+| release 构建（LTO） | 8 分 27 秒 | 11 分 16 秒 |
+| 测试 | 143 全绿 | 143 全绿 |
+| 运行库依赖 | `VCRUNTIME140.dll` + UCRT（Win10+ 自带 UCRT） | 无（静态链接 mingw） |
+
+`VCRUNTIME140.dll` 是 VC++ 2015–2022 运行库，绝大多数机器上已有；要彻底零依赖就用静态 CRT（`dist/AutoSignBJMF-rs.exe` 就是这一版）：
+
+```bash
+RUSTFLAGS="-C target-feature=+crt-static" cargo build --release -p bjmf-app --target x86_64-pc-windows-msvc
+```
+
+静态 CRT 版实测 **10.56 MB**，导入表只剩 28 个系统 DLL，与 GNU 版一样可直接单文件分发（构建时会有 `libvcruntime.lib` 的 LNK4099 警告，是缺 pdb，不影响产物）。
+
+回退到 GNU：`cargo +stable-x86_64-pc-windows-gnu build -p bjmf-app`（`config.toml` 只有 msvc 段，不影响 gnu）。
 
 ### 已完成（第四轮）
 
@@ -180,8 +209,7 @@ GNU 版能正常用（已实测 10.7 MB / 单文件 / 无 VC++ 运行库依赖�
 
 ### 仍未完成
 
-- 托盘菜单的「开机自启」文案是启动时的快照，改完设置要重启才刷新（注册表已即时生效）
-- 正式发布建议切 MSVC 工具链：GNU 版依赖 mingw 运行库的静态链接，MSVC 版更贴近系统默认
+- 托盘菜单的「开机自启」文案改完设置后要重启才刷新（注册表已即时生效）
 
 ### 本地运行
 

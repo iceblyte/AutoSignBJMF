@@ -1,12 +1,15 @@
-# 构建 Rust 版桌面端（Windows）
+# 构建 Rust 版桌面端（Windows / MSVC 目标）
 #
 # 用法：
 #   powershell -File build\build-rust.ps1              # 只构建 release
 #   powershell -File build\build-rust.ps1 -Portable    # 额外打一个便携 zip
 #
-# 依赖：
-#   - Rust（stable，x86_64-pc-windows-*）
-#   - release 构建需要 fxc.exe：设 GPUI_FXC_PATH，或让它在 PATH 里
+# 依赖（都不需要安装 Visual Studio）：
+#   - rustup 工具链 stable-x86_64-pc-windows-msvc
+#   - LLVM 的 clang-cl / lld-link（scoop install llvm）
+#   - MSVC 的 CRT 与 Windows SDK 头/库（由 cargo-xwin 拉到 D:\Tools\xwin-cache）
+#     路径写在 rust\.cargo\config.toml 里
+#   - release 构建还需要 fxc.exe：设 GPUI_FXC_PATH，或让它在 PATH 里
 #     （取法见 rust/README.md，debug 构建不需要）
 
 param(
@@ -16,14 +19,28 @@ param(
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
 $rust = Join-Path $root "rust"
+$triple = "x86_64-pc-windows-msvc"
+
+# ---- 前置检查：缺什么就说清楚缺什么，而不是等链接时报一堆错 ----
+$missing = @()
+foreach ($tool in @("clang-cl", "lld-link", "llvm-lib")) {
+    if (-not (Get-Command $tool -ErrorAction SilentlyContinue)) { $missing += $tool }
+}
+if ($missing.Count -gt 0) {
+    throw "PATH 里找不到 $($missing -join ', ')。先执行：scoop install llvm（装完要重开终端）"
+}
+if (-not $env:GPUI_FXC_PATH) {
+    Write-Host "提示：未设置 GPUI_FXC_PATH，release 构建会在编译着色器时失败。" -ForegroundColor Yellow
+    Write-Host "      取值方法见 rust\README.md「release 需要 fxc」一节。" -ForegroundColor Yellow
+}
 
 Push-Location $rust
 try {
-    Write-Host "== cargo build --release ==" -ForegroundColor Cyan
-    cargo build --release -p bjmf-app
+    Write-Host "== cargo build --release --target $triple ==" -ForegroundColor Cyan
+    cargo build --release -p bjmf-app --target $triple
     if ($LASTEXITCODE -ne 0) { throw "cargo build 失败" }
 
-    $exe = Join-Path $rust "target\release\AutoSignBJMF.exe"
+    $exe = Join-Path $rust "target\$triple\release\AutoSignBJMF.exe"
     if (-not (Test-Path $exe)) { throw "找不到产物：$exe" }
 
     $dist = Join-Path $root "dist"

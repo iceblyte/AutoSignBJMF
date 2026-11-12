@@ -60,6 +60,7 @@ selfcheck.txt
 
 ## Rust 编译产物（workspace 与独立 spike 各有一份 target）
 /rust/target/
+/rust/target-static/
 /rust/*/target/
 /spike/*/target/
 

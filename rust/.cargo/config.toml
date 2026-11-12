@@ -1,0 +1,31 @@
+# ============================================================================
+# MSVC 目标：不装 Visual Studio 也能构建
+#
+# 组成：
+#   编译器  clang-cl / llvm-ml     → scoop 装的 LLVM
+#   链接器  lld-link               → 同上（MSVC 兼容）
+#   CRT     msvcrt.lib / libcmt.lib→ xwin 从 VS 2022 17.14 的包中解出
+#   SDK     kernel32.lib 等        → xwin 从 Win11 SDK 10.0.26100 解出
+#
+# 这些东西全部落在 D:\Tools\xwin-cache，没有进 C 盘，也没有安装 VS。
+# 换机器时改下面三处路径即可（或删掉本文件，改用真正装了 VS 的环境）。
+#
+# 注意：`[env]` 对所有 target 生效，但 MinGW 的 gcc 不读 INCLUDE / LIB，
+#       所以 x86_64-pc-windows-gnu 的构建不受影响。
+# ============================================================================
+
+[target.x86_64-pc-windows-msvc]
+# lld-link 与 link.exe 参数兼容，rustc 会按 MSVC 风格调用它
+linker = "lld-link"
+
+[env]
+# ---- 头文件（clang-cl 靠 INCLUDE 找 stdio.h / windows.h）----
+INCLUDE = { value = "D:\\Tools\\xwin-cache\\xwin\\crt\\include;D:\\Tools\\xwin-cache\\xwin\\sdk\\include\\ucrt;D:\\Tools\\xwin-cache\\xwin\\sdk\\include\\um;D:\\Tools\\xwin-cache\\xwin\\sdk\\include\\shared;D:\\Tools\\xwin-cache\\xwin\\sdk\\include\\winrt", force = false }
+
+# ---- 导入库（lld-link 靠 LIB 找 kernel32.lib / msvcrt.lib）----
+LIB = { value = "D:\\Tools\\xwin-cache\\xwin\\crt\\lib\\x86_64;D:\\Tools\\xwin-cache\\xwin\\sdk\\lib\\ucrt\\x86_64;D:\\Tools\\xwin-cache\\xwin\\sdk\\lib\\um\\x86_64", force = false }
+
+# ---- C / C++ / 静态库工具（cc crate 读这些变量）----
+CC_x86_64_pc_windows_msvc = "clang-cl"
+CXX_x86_64_pc_windows_msvc = "clang-cl"
+AR_x86_64_pc_windows_msvc = "llvm-lib"
