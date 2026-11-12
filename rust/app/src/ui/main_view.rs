@@ -285,6 +285,71 @@ impl AppView {
         cx.notify();
     }
 
+    /// 导出配置：账号 + 设置，不含日志。
+    pub fn export_config(&mut self) {
+        let Some(path) = rfd::FileDialog::new()
+            .set_title("导出配置")
+            .set_file_name("AutoSignBJMF-配置.json")
+            .add_filter("JSON", &["json"])
+            .save_file()
+        else {
+            return;
+        };
+        let text = crate::ui::transfer::export_bundle(&self.state.config, &self.state.settings);
+        match std::fs::write(&path, text) {
+            Ok(()) => self.state.log(
+                LogKind::Ok,
+                format!("已导出配置到 {}", path.display()),
+            ),
+            Err(error) => self
+                .state
+                .log(LogKind::Bad, format!("导出失败：{error}")),
+        }
+    }
+
+    /// 导入配置：支持本程序导出格式，也支持直接选 Python 版的 data.json。
+    pub fn import_config(&mut self) {
+        let Some(path) = rfd::FileDialog::new()
+            .set_title("导入配置")
+            .add_filter("JSON", &["json"])
+            .pick_file()
+        else {
+            return;
+        };
+        let text = match std::fs::read_to_string(&path) {
+            Ok(text) => text,
+            Err(error) => {
+                self.state
+                    .log(LogKind::Bad, format!("读取文件失败：{error}"));
+                return;
+            }
+        };
+        let (config, settings) = match crate::ui::transfer::import_bundle(&text) {
+            Ok(pair) => pair,
+            Err(error) => {
+                self.error = Some(error.clone());
+                self.state.log(LogKind::Bad, format!("导入失败：{error}"));
+                return;
+            }
+        };
+        let summary = crate::ui::transfer::describe(&config);
+        if let Err(error) = config.save(self.state.paths.config_file()) {
+            self.state
+                .log(LogKind::Bad, format!("写入配置失败：{error}"));
+            return;
+        }
+        if let Err(error) = settings.save(self.state.paths.settings_file()) {
+            self.state
+                .log(LogKind::Bad, format!("写入设置失败：{error}"));
+            return;
+        }
+        self.state.config = config;
+        self.state.settings = settings;
+        self.state.selected = 0;
+        self.state.reload_draft();
+        self.state.log(LogKind::Ok, format!("已导入配置：{summary}"));
+    }
+
     /// 删除当前账号（连同 Cookie 一起从 data.json 里去掉）。
     fn delete_selected(&mut self) {
         let index = self.state.selected;
@@ -1342,9 +1407,13 @@ impl AppView {
                                             })),
                                     )
                                     .child(
-                                        button("导入配置文件", BtnKind::Default, BtnSize::Normal, true, p)
+                                        button("导入配置文件", BtnKind::Default, BtnSize::Normal, false, p)
                                             .id("import-config")
-                                            .into_any_element(),
+                                            .cursor_pointer()
+                                            .on_click(cx.listener(|this, _, _, cx| {
+                                                this.import_config();
+                                                cx.notify();
+                                            })),
                                     ),
                             )
                             .child(

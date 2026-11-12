@@ -425,8 +425,24 @@ fn data(view: &mut AppView, p: &Palette, cx: &mut Context<AppView>) -> AnyElemen
             div()
                 .flex()
                 .gap(px(8.0))
-                .child(button("导出配置（.json）", BtnKind::Default, BtnSize::Small, true, p))
-                .child(button("导入配置", BtnKind::Default, BtnSize::Small, true, p)),
+                .child(
+                    button("导出配置（.json）", BtnKind::Default, BtnSize::Small, false, p)
+                        .id("export-config")
+                        .cursor_pointer()
+                        .on_click(cx.listener(|view, _, _, cx| {
+                            view.export_config();
+                            cx.notify();
+                        })),
+                )
+                .child(
+                    button("导入配置", BtnKind::Default, BtnSize::Small, false, p)
+                        .id("import-config-settings")
+                        .cursor_pointer()
+                        .on_click(cx.listener(|view, _, _, cx| {
+                            view.import_config();
+                            cx.notify();
+                        })),
+                ),
         )
         .child(div().flex_1())
         .child(

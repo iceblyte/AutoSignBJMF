@@ -147,6 +147,31 @@ GPUI 单进程就能同时满足「开窗 55 MB」「关窗后不掉到几百兆
   回归脚本：`python rust/_tools/close_test.py`（拉起 → 发 WM_CLOSE → 断言隐藏且进程存活）
 - 打包：`build/build-rust.ps1`（`-Portable` 额外出一份便携 zip，包内不含任何账号数据）
 
+### 已完成（第五轮）
+
+- **导入 / 导出配置**：`ui/transfer.rs` 负责打包与解析（9 个单测），文件对话框用 `rfd`。
+  导出格式带 `version`/`exportedAt`；导入兼容**裸 `data.json`**，方便从 Python 版直接迁移
+- **托盘文案实时刷新**：每 2 秒重读一次开机自启与暂停状态，改设置后菜单文字立刻跟上
+- **外部命令不再弹黑窗**：统一走 `hidden_command()`（`CREATE_NO_WINDOW`）
+- 不可用的按钮全部置灰（单实例开关标注「始终开启」），不再出现「看着能点其实没反应」
+
+### MSVC 工具链：这台机器上做不了
+
+`rustup toolchain list` 只有 `stable-x86_64-pc-windows-gnu`，`C://Program Files\Microsoft Visual Studio\2017` 里没有 `link.exe`，
+所以现在切 MSVC 会直接链接失败。要切的话：
+
+```bash
+# 1) 装 C++ 桌面开发（含 MSVC 链接器），约 2–4 GB，需要管理员
+winget install Microsoft.VisualStudio.2022.BuildTools --override "--add Microsoft.VisualStudio.Workload.VCTools --quiet"
+# 2) 装 MSVC 目标的 Rust 标准库
+rustup toolchain install stable-x86_64-pc-windows-msvc
+rustup default stable-x86_64-pc-windows-msvc
+# 3) 重新构建（release 仍需要 fxc.exe，走同一个 GPUI_FXC_PATH）
+cargo build --release -p bjmf-app
+```
+
+GNU 版能正常用（已实测 10.7 MB / 单文件 / 无 VC++ 运行库依赖），MSVC 只是发布期的规范化，不是功能问题。
+
 ### 已完成（第四轮）
 
 - **exe 图标与版本信息**：`app/app.rc` + `build.rs` 用 `embed-resource` 编入（GNU 走 windres，MSVC 走 rc.exe）。

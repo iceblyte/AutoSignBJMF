@@ -108,7 +108,8 @@ pub fn spawn(
         .spawn(move || {
             let _keep = marker_thread;
             match build_tray(autostart_on) {
-                Ok((ids, _tray)) => {
+                Ok((ids, items, _tray)) => {
+                    let mut last_tick = std::time::Instant::now();
                     let receiver = MenuEvent::receiver();
                     let icon_events = TrayIconEvent::receiver();
                     // 托盘线程要有消息循环，菜单才会弹出来；
@@ -199,6 +200,23 @@ pub fn spawn(
                                     None => {}
                                 }
                             }
+                            // 每 2 秒把「开机自启 / 暂停」两行的文字刷成真实状态，
+                            // 免得设置页改了之后菜单文案还是启动时的快照
+                            if last_tick.elapsed() >= std::time::Duration::from_secs(2) {
+                                last_tick = std::time::Instant::now();
+                                let autostart_on = crate::system::autostart::is_enabled();
+                                items.autostart.set_text(if autostart_on {
+                                    "开机自启（已开启）"
+                                } else {
+                                    "开机自启（已关闭）"
+                                });
+                                let is_paused = paused.load(Ordering::Relaxed);
+                                items.pause.set_text(if is_paused {
+                                    "恢复全部"
+                                } else {
+                                    "暂停全部"
+                                });
+                            }
                             std::thread::sleep(std::time::Duration::from_millis(80));
                         }
                     }
@@ -217,7 +235,13 @@ pub fn spawn(
     Ok(TrayHandle { _marker: marker })
 }
 
-fn build_tray(autostart_on: bool) -> Result<(TrayIds, tray_icon::TrayIcon), String> {
+/// 需要在运行期改文字的两个菜单项。
+struct TrayItems {
+    autostart: MenuItem,
+    pause: MenuItem,
+}
+
+fn build_tray(autostart_on: bool) -> Result<(TrayIds, TrayItems, tray_icon::TrayIcon), String> {
     let open = MenuItem::new("打开主窗口", true, None);
     let run_now = MenuItem::new("立即签到全部", true, None);
     let pause = MenuItem::new("暂停全部", true, None);
@@ -232,6 +256,16 @@ fn build_tray(autostart_on: bool) -> Result<(TrayIds, tray_icon::TrayIcon), Stri
     );
     let settings = MenuItem::new("设置", true, None);
     let quit = MenuItem::new("退出", true, None);
+
+    let items = TrayItems {
+        autostart: autostart.clone(),
+        pause: pause.clone(),
+    };
+
+    let items = TrayItems {
+        autostart: autostart.clone(),
+        pause: pause.clone(),
+    };
 
     let ids = TrayIds {
         open: open.id().0.clone(),
@@ -264,7 +298,7 @@ fn build_tray(autostart_on: bool) -> Result<(TrayIds, tray_icon::TrayIcon), Stri
         .build()
         .map_err(|error| error.to_string())?;
 
-    Ok((ids, tray))
+    Ok((ids, items, tray))
 }
 
 #[cfg(test)]
