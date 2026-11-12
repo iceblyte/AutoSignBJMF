@@ -1,0 +1,888 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>UI v2 · 桌面端 exe（Rust / Tauri）· AutoSignBJMF</title>
+<link rel="stylesheet" href="proto.css?v=20261111b" />
+<style>
+  /* 二维码：由 proto.js 用 data-qr 生成 SVG（示意图案，不是真实可扫码内容） */
+  .fakeqr { width: 168px; height: 168px; background: #fff; }
+  .fakeqr svg { display: block; width: 100%; height: 100%; }
+  .fakeqr rect { shape-rendering: crispEdges; }
+
+  .rowcap { display: flex; align-items: center; gap: 10px; margin: 24px 0 11px; }
+  .rowcap .line { flex: 1; height: 1px; background: var(--line); }
+  .ghost { background: var(--surface-3); border: 1px solid var(--line); border-radius: 7px; }
+
+  /* Rust/Tauri：窗口可以真有圆角与投影 */
+  .win { border-radius: 12px; }
+  .win .wt { border-radius: 12px 12px 0 0; }
+</style>
+</head>
+<body>
+
+<div class="board-bar">
+  <img class="bb-logo" src="assets/logo.png" alt="" />
+  <div>
+    <div class="bb-t">UI v2 · 桌面端 exe</div>
+    <div class="bb-s">Rust + Tauri 目标形态 · 6 屏 + 托盘 · 1240 × 860 画板</div>
+  </div>
+  <span class="grow"></span>
+  <a class="btn btn-sm" href="20-web-user.html">Web 用户端 →</a>
+  <a class="btn btn-sm" href="30-web-admin.html">管理端 →</a>
+  <button class="btn btn-sm" id="themeBtn">切换深色</button>
+</div>
+
+<div class="board">
+  <div class="board-lede">
+    <h1>桌面端：账号列表 · 面板区 · 常驻状态栏</h1>
+    <p>
+      目标形态是 Rust + Tauri，所以这版不再按 tkinter 降级：窗口有真圆角与投影、控件 32px、行高 46px。
+      <b>标题栏按 dbx 的做法</b>：去掉系统边框，36px 自绘栏（可拖拽、双击最大化），右侧 46px 全高窗口按钮，关闭按钮悬停变红。
+      组件、文案、状态语义与 Web 两端完全同源（见 <a href="01-style.html#s9" style="color:var(--accent)">组件对等矩阵</a>），
+      差异只在「容器」与「平台专属能力」（托盘、开机自启、单实例）。
+    </p>
+  </div>
+
+  <div class="rowcap">
+    <span class="pill acc">A · 主界面</span>
+    <span class="hint">正常态 / 需处理态 / 添加账号</span>
+    <span class="line"></span>
+    <span class="hint">窗口 1160 × 800</span>
+  </div>
+
+  <div class="sheet">
+
+    <!-- ---------- 01 主界面 运行中 ---------- -->
+    <div class="cell">
+      <div class="cell-h">
+        <span class="idx">01</span><span class="nm">主界面 · 运行中</span>
+        <span class="env">默认</span>
+        <button class="zoombtn">1:1</button>
+      </div>
+      <div class="frame" data-w="1240" data-h="860">
+        <div class="frame-inner">
+          <div class="page exe">
+            <div class="desk">
+              <div class="win">
+                <div class="wt">
+                  <img class="lg" src="assets/logo.png" alt="" />
+                  <span class="tt">班级魔方自动签到</span>
+                  <span class="pill ok" style="height:19px;font-size:10px;padding:0 7px"><i class="d"></i>后台运行中</span>
+                  <div class="gr"></div>
+                  <span class="wbtn"><svg width="10" height="10" viewBox="0 0 10 10"><path d="M2 5h6" stroke="currentColor" stroke-width="1.2"/></svg></span>
+                  <span class="wbtn"><svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.2"><rect x="2.2" y="2.2" width="5.6" height="5.6" rx="1"/></svg></span>
+                  <span class="wbtn close"><svg width="10" height="10" viewBox="0 0 10 10"><path d="M2.4 2.4l5.2 5.2M7.6 2.4L2.4 7.6" stroke="currentColor" stroke-width="1.2"/></svg></span>
+                </div>
+
+                <div class="wb">
+                  <!-- 侧栏 -->
+                  <aside class="wside">
+                    <div class="sh">
+                      <span class="t">账号</span>
+                      <span class="c">2 / 3</span>
+                      <span class="grow"></span>
+                      <span class="btn btn-xs">＋ 扫码添加</span>
+                    </div>
+                    <div class="wlist">
+                      <div class="stu on">
+                        <span class="ava">张</span>
+                        <div class="mt">
+                          <div class="n">张明远</div>
+                          <div class="s">2023 级计算机 1 班 · 下次 21:31</div>
+                        </div>
+                        <span class="dot ok"></span>
+                      </div>
+                      <div class="stu">
+                        <span class="ava w">林</span>
+                        <div class="mt">
+                          <div class="n">林可欣</div>
+                          <div class="s">需重新登录 · 已暂停</div>
+                        </div>
+                        <span class="dot warn"></span>
+                      </div>
+                      <div class="stu">
+                        <span class="ava g">陈</span>
+                        <div class="mt">
+                          <div class="n">陈子谦</div>
+                          <div class="s">已暂停 · 08:00</div>
+                        </div>
+                        <span class="dot"></span>
+                      </div>
+                    </div>
+                    <div class="sf">
+                      <div class="row-b" style="font-size:11.5px;color:var(--text-2)">
+                        <span>开机自启</span><button class="sw" aria-checked="true"></button>
+                      </div>
+                      <div class="row-b" style="font-size:11.5px;color:var(--text-2)">
+                        <span>关窗最小化到托盘</span><button class="sw" aria-checked="true"></button>
+                      </div>
+                      <div class="row" style="gap:6px;padding-top:2px">
+                        <span class="hint" style="flex:1">上次同步 21:31</span>
+                        <span class="hint" style="color:var(--accent)">设置</span>
+                      </div>
+                    </div>
+                  </aside>
+
+                  <!-- 主区 -->
+                  <div class="wmain">
+                    <div class="wmh">
+                      <div style="flex:1">
+                        <div class="t">张明远</div>
+                        <div class="s">2023 级计算机 1 班 · 今天已签到 1 次 · 下次 21:31（4 小时 12 分后）</div>
+                      </div>
+                      <span class="pill ok"><i class="d"></i>运行中</span>
+                      <span class="btn btn-sm">暂停</span>
+                      <span class="btn btn-sm btn-p">立即签到</span>
+                    </div>
+
+                    <div class="wbody">
+                      <div class="panel">
+                        <div class="ph">
+                          <span class="t">签到地点与通知</span>
+                          <div class="grow"></div>
+                          <span class="n">精度 30 米</span>
+                        </div>
+                        <div class="pb">
+                          <div class="row" style="gap:8px;align-items:flex-end">
+                            <div class="field" style="flex:1"><div class="lbl">纬度</div><input class="in mono" value="39.908720" /></div>
+                            <div class="field" style="flex:1"><div class="lbl">经度</div><input class="in mono" value="116.397450" /></div>
+                            <span class="btn btn-sm"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 21s7-6.1 7-11a7 7 0 1 0-14 0c0 4.9 7 11 7 11z"/><circle cx="12" cy="10" r="2.6"/></svg>拾取</span>
+                          </div>
+                          <div class="row" style="gap:8px">
+                            <div class="field" style="flex:1">
+                              <div class="lbl"><button class="sw" aria-checked="true"></button>微信通知 · Server 酱</div>
+                              <input class="in mono" value="SCT••••••4f2a" />
+                            </div>
+                            <div class="field" style="flex:1">
+                              <div class="lbl"><button class="sw" aria-checked="false"></button>QQ 通知 · Qmsg 酱</div>
+                              <input class="in mono ro" value="未配置" readonly />
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+
+                      <div class="panel">
+                        <div class="ph">
+                          <span class="t">每天执行时间</span>
+                          <div class="grow"></div>
+                          <span class="n">按北京时间 UTC+8</span>
+                        </div>
+                        <div class="pb" style="gap:9px">
+                          <div class="row" style="gap:7px;flex-wrap:wrap">
+                            <span class="chip">07:30:00<i class="x">×</i></span>
+                            <span class="chip">21:31:00<i class="x">×</i></span>
+                            <span class="chip add">＋ 添加</span>
+                          </div>
+                          <div class="row" style="gap:7px;padding-top:9px;border-top:1px solid var(--line)">
+                            <span class="lbl">失败重试</span>
+                            <input class="in" style="width:50px;height:26px;text-align:center;padding:0" value="3" />
+                            <span class="lbl">次，间隔</span>
+                            <input class="in" style="width:50px;height:26px;text-align:center;padding:0" value="5" />
+                            <span class="lbl">分钟</span>
+                            <div class="grow"></div>
+                            <span class="hint">1–10 次 · 1–60 分钟</span>
+                          </div>
+                        </div>
+                      </div>
+
+                      <div class="panel" style="flex:1;min-height:0;display:flex;flex-direction:column">
+                        <div class="ph">
+                          <span class="t">运行日志</span>
+                          <div class="grow"></div>
+                          <span class="hint" style="color:var(--accent)">复制</span>
+                          <span class="hint">清空</span>
+                          <span class="hint">打开目录</span>
+                        </div>
+                        <pre class="log" style="flex:1;overflow:hidden"><span class="dm">21:31:02</span>  用户与班级：张明远 / 2000001
+<span class="dm">21:31:02</span>  检测到签到项 88213（punchs）
+<span class="dm">21:31:03</span>  网络请求成功
+<span class="dm">21:31:03</span>  <span class="ok">本次签到成功</span> · 定位 39.9088, 116.3974
+<span class="dm">21:31:03</span>  下次执行 21:31（明天）
+<span class="dm">--</span>
+<span class="dm">07:30:01</span>  用户与班级：张明远 / 2000001
+<span class="dm">07:30:02</span>  检测到签到项 88213（punchs）
+<span class="dm">07:30:02</span>  <span class="ok">本次签到成功</span> · 定位 39.9088, 116.3974</pre>
+                      </div>
+                    </div>
+
+                    <div class="sbar">
+                      <span class="dot ok"></span>
+                      <span>运行中</span>
+                      <span class="vsep"></span>
+                      <span>下次 21:31 · 还有 4 小时 12 分</span>
+                      <span class="vsep"></span>
+                      <span class="hint">Ctrl + Enter 立即签到</span>
+                      <div class="grow"></div>
+                      <span class="hint">无未保存的修改</span>
+                      <span class="btn btn-sm" aria-disabled="true">保存</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ---------- 02 主界面 需重新登录 ---------- -->
+    <div class="cell">
+      <div class="cell-h">
+        <span class="idx">02</span><span class="nm">主界面 · 需重新登录</span>
+        <span class="env">异常态</span>
+        <button class="zoombtn">1:1</button>
+      </div>
+      <div class="frame" data-w="1240" data-h="860">
+        <div class="frame-inner">
+          <div class="page exe">
+            <div class="desk">
+              <div class="win">
+                <div class="wt">
+                  <img class="lg" src="assets/logo.png" alt="" />
+                  <span class="tt">班级魔方自动签到</span>
+                  <span class="pill warn" style="height:19px;font-size:10px;padding:0 7px"><i class="d"></i>1 个账号需处理</span>
+                  <div class="gr"></div>
+                  <span class="wbtn"><svg width="10" height="10" viewBox="0 0 10 10"><path d="M2 5h6" stroke="currentColor" stroke-width="1.2"/></svg></span>
+                  <span class="wbtn"><svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.2"><rect x="2.2" y="2.2" width="5.6" height="5.6" rx="1"/></svg></span>
+                  <span class="wbtn close"><svg width="10" height="10" viewBox="0 0 10 10"><path d="M2.4 2.4l5.2 5.2M7.6 2.4L2.4 7.6" stroke="currentColor" stroke-width="1.2"/></svg></span>
+                </div>
+
+                <div class="wb">
+                  <aside class="wside">
+                    <div class="sh">
+                      <span class="t">账号</span>
+                      <span class="c">2 / 3</span>
+                      <span class="grow"></span>
+                      <span class="btn btn-xs">＋ 扫码添加</span>
+                    </div>
+                    <div class="wlist">
+                      <div class="stu">
+                        <span class="ava">张</span>
+                        <div class="mt">
+                          <div class="n">张明远</div>
+                          <div class="s">2023 级计算机 1 班 · 下次 21:31</div>
+                        </div>
+                        <span class="dot ok"></span>
+                      </div>
+                      <div class="stu on">
+                        <span class="ava w">林</span>
+                        <div class="mt">
+                          <div class="n">林可欣</div>
+                          <div class="s">需重新登录 · 已暂停</div>
+                        </div>
+                        <span class="dot warn"></span>
+                      </div>
+                      <div class="stu">
+                        <span class="ava g">陈</span>
+                        <div class="mt">
+                          <div class="n">陈子谦</div>
+                          <div class="s">已暂停 · 08:00</div>
+                        </div>
+                        <span class="dot"></span>
+                      </div>
+                    </div>
+                    <div class="sf">
+                      <div class="row-b" style="font-size:11.5px;color:var(--text-2)">
+                        <span>开机自启</span><button class="sw" aria-checked="true"></button>
+                      </div>
+                      <div class="row-b" style="font-size:11.5px;color:var(--text-2)">
+                        <span>关窗最小化到托盘</span><button class="sw" aria-checked="true"></button>
+                      </div>
+                      <div class="row" style="gap:6px;padding-top:2px">
+                        <span class="hint" style="flex:1">上次同步 21:31</span>
+                        <span class="hint" style="color:var(--accent)">设置</span>
+                      </div>
+                    </div>
+                  </aside>
+
+                  <div class="wmain">
+                    <div class="wmh">
+                      <div style="flex:1">
+                        <div class="t">林可欣</div>
+                        <div class="s">2023 级计算机 1 班 · 最后一次成功 11-08 21:31</div>
+                      </div>
+                      <span class="pill warn"><i class="d"></i>需重新登录</span>
+                      <span class="btn btn-sm">查看日志</span>
+                      <span class="btn btn-sm btn-p">重新扫码</span>
+                    </div>
+
+                    <div class="wbody">
+                      <div class="alert warn">
+                        <span class="ai">
+                          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 8v5M12 16.5v.01"/></svg>
+                        </span>
+                        <div style="flex:1">
+                          <b>微信登录凭证已过期</b>，该账号的定时签到已暂停。重新扫码后会沿用现有配置，不需要重新填地点和时间。
+                        </div>
+                        <span class="btn btn-xs" style="flex:none">稍后提醒</span>
+                      </div>
+
+                      <div class="panel">
+                        <div class="ph">
+                          <span class="t">签到地点与通知</span>
+                          <div class="grow"></div>
+                          <span class="n">凭证失效，暂不可编辑</span>
+                        </div>
+                        <div class="pb">
+                          <div class="row" style="gap:8px;align-items:flex-end">
+                            <div class="field" style="flex:1"><div class="lbl">纬度</div><input class="in mono ro" value="39.908720" readonly /></div>
+                            <div class="field" style="flex:1"><div class="lbl">经度</div><input class="in mono ro" value="116.397450" readonly /></div>
+                            <span class="btn btn-sm" aria-disabled="true"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 21s7-6.1 7-11a7 7 0 1 0-14 0c0 4.9 7 11 7 11z"/><circle cx="12" cy="10" r="2.6"/></svg>拾取</span>
+                          </div>
+                          <div class="row" style="gap:8px">
+                            <div class="field" style="flex:1">
+                              <div class="lbl"><button class="sw" aria-checked="true" aria-disabled="true"></button>微信通知 · Server 酱</div>
+                              <input class="in mono ro" value="SCT••••••4f2a" readonly />
+                            </div>
+                            <div class="field" style="flex:1">
+                              <div class="lbl"><button class="sw" aria-checked="false" aria-disabled="true"></button>QQ 通知 · Qmsg 酱</div>
+                              <input class="in mono ro" value="未配置" readonly />
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+
+                      <div class="panel" style="flex:1;min-height:0;display:flex;flex-direction:column">
+                        <div class="ph">
+                          <span class="t">运行日志</span>
+                          <div class="grow"></div>
+                          <span class="hint" style="color:var(--accent)">复制</span>
+                          <span class="hint">清空</span>
+                          <span class="hint">打开目录</span>
+                        </div>
+                        <pre class="log" style="flex:1;overflow:hidden"><span class="dm">21:31:02</span>  用户与班级：未获取到（Cookie 已失效）
+<span class="dm">21:31:02</span>  <span class="bd">登录状态异常，本次签到未执行</span>
+<span class="dm">21:31:02</span>  已暂停该账号的后续调度
+<span class="dm">--</span>
+<span class="dm">11-08 21:31:02</span>  用户与班级：林可欣 / 2000001
+<span class="dm">11-08 21:31:03</span>  <span class="ok">本次签到成功</span> · 定位 39.9088, 116.3974</pre>
+                      </div>
+                    </div>
+
+                    <div class="sbar">
+                      <span class="dot warn"></span>
+                      <span>已暂停 · 等待重新登录</span>
+                      <span class="vsep"></span>
+                      <span class="hint">重新扫码后自动恢复调度</span>
+                      <div class="grow"></div>
+                      <span class="btn btn-sm">删除账号</span>
+                      <span class="btn btn-sm btn-p">重新扫码</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ---------- 03 添加账号 ---------- -->
+    <div class="cell">
+      <div class="cell-h">
+        <span class="idx">03</span><span class="nm">添加账号 · 扫码</span>
+        <span class="env">模态</span>
+        <button class="zoombtn">1:1</button>
+      </div>
+      <div class="frame" data-w="1240" data-h="860">
+        <div class="frame-inner">
+          <div class="page exe">
+            <div class="desk" style="position:relative">
+              <div class="win">
+                <div class="wt">
+                  <img class="lg" src="assets/logo.png" alt="" />
+                  <span class="tt">班级魔方自动签到</span>
+                  <div class="gr"></div>
+                  <span class="wbtn"><svg width="10" height="10" viewBox="0 0 10 10"><path d="M2 5h6" stroke="currentColor" stroke-width="1.2"/></svg></span>
+                  <span class="wbtn"><svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.2"><rect x="2.2" y="2.2" width="5.6" height="5.6" rx="1"/></svg></span>
+                  <span class="wbtn close"><svg width="10" height="10" viewBox="0 0 10 10"><path d="M2.4 2.4l5.2 5.2M7.6 2.4L2.4 7.6" stroke="currentColor" stroke-width="1.2"/></svg></span>
+                </div>
+                <div class="wb">
+                  <aside class="wside" style="padding:10px 8px;gap:8px">
+                    <div class="ghost" style="height:24px;width:64%"></div>
+                    <div class="ghost" style="height:44px"></div>
+                    <div class="ghost" style="height:44px"></div>
+                    <div class="ghost" style="height:44px"></div>
+                  </aside>
+                  <div style="padding:16px;display:flex;flex-direction:column;gap:12px">
+                    <div class="ghost" style="height:24px;width:34%"></div>
+                    <div class="ghost" style="height:112px"></div>
+                    <div class="ghost" style="height:66px"></div>
+                    <div class="ghost" style="flex:1;min-height:110px"></div>
+                  </div>
+                </div>
+              </div>
+
+              <div class="scrim">
+                <div class="modal" style="width:420px">
+                  <div class="mh">
+                    <img src="assets/logo.png" alt="" style="width:16px;height:16px" />
+                    <span class="mt">添加账号</span>
+                    <div class="grow"></div>
+                    <span class="wbtn" style="width:24px;height:24px"><svg width="10" height="10" viewBox="0 0 10 10"><path d="M2.4 2.4l5.2 5.2M7.6 2.4L2.4 7.6" stroke="currentColor" stroke-width="1.2"/></svg></span>
+                  </div>
+                  <div class="mb" style="padding:18px 20px;gap:11px">
+                    <div class="qr live" style="width:196px;height:196px;padding:0;overflow:hidden">
+                      <div class="fakeqr" data-qr></div>
+                    </div>
+                    <div style="text-align:center">
+                      <div style="font-size:13px;font-weight:600">用微信扫码并确认</div>
+                      <div class="hint" style="margin-top:3px">会话剩余 01:42 · 扫码成功后自动创建任务</div>
+                    </div>
+                    <div style="width:100%;display:flex;align-items:center;gap:8px;border:1px solid var(--line);border-radius:8px;background:var(--surface-2);padding:9px 11px">
+                      <span class="dot warn"></span>
+                      <span style="font-size:11.5px;color:var(--text-2);flex:1">等待扫码…</span>
+                      <span class="hint" style="font-family:var(--mono)">8f3c9a·a1d2</span>
+                    </div>
+                    <div class="hint" style="text-align:center">扫码完成后可继续添加账号，或直接在主界面填入地点与时间。</div>
+                  </div>
+                  <div class="mf">
+                    <span class="hint" style="color:var(--accent)">扫码失败？手动填写 Cookie</span>
+                    <div class="grow"></div>
+                    <span class="btn btn-sm">取消</span>
+                    <span class="btn btn-sm btn-p">重新生成</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="rowcap">
+    <span class="pill acc">B · 设置与首次运行</span>
+    <span class="hint">设置是独立窗口 860 × 560，与主窗口同一套控件</span>
+    <span class="line"></span>
+    <span class="hint">1240 × 860</span>
+  </div>
+
+  <div class="sheet">
+
+    <!-- ---------- 04 设置 常规 ---------- -->
+    <div class="cell">
+      <div class="cell-h">
+        <span class="idx">04</span><span class="nm">设置 · 常规</span>
+        <span class="env">独立窗口</span>
+        <button class="zoombtn">1:1</button>
+      </div>
+      <div class="frame" data-w="1240" data-h="860">
+        <div class="frame-inner">
+          <div class="page exe">
+            <div class="desk">
+              <div class="setwin">
+                <div class="wt">
+                  <img class="lg" src="assets/logo.png" alt="" />
+                  <span class="tt">设置</span>
+                  <div class="gr"></div>
+                  <span class="wbtn close"><svg width="10" height="10" viewBox="0 0 10 10"><path d="M2.4 2.4l5.2 5.2M7.6 2.4L2.4 7.6" stroke="currentColor" stroke-width="1.2"/></svg></span>
+                </div>
+                <div class="set-body">
+                  <aside class="set-nav">
+                    <div class="si on">
+                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="3.2"/><path d="M19 12a7 7 0 0 0-.1-1l1.8-1.4-1.8-3.1-2.1.9a7 7 0 0 0-1.7-1L14.7 4h-3.4l-.4 2.3a7 7 0 0 0-1.7 1l-2.1-.9L5.3 9.6 7.1 11a7 7 0 0 0 0 2l-1.8 1.4 1.8 3.1 2.1-.9a7 7 0 0 0 1.7 1l.4 2.3h3.4l.4-2.3a7 7 0 0 0 1.7-1l2.1.9 1.8-3.1L19 13a7 7 0 0 0 0-1z"/></svg>
+                      常规
+                    </div>
+                    <div class="si">
+                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M18 8a6 6 0 1 0-12 0c0 6-2 7-2 7h16s-2-1-2-7z"/><path d="M10.5 20a2 2 0 0 0 3 0"/></svg>
+                      通知
+                    </div>
+                    <div class="si">
+                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 7c0-1.1.9-2 2-2h12a2 2 0 0 1 2 2v3H4V7z"/><path d="M4 10h16v7a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-7z"/><path d="M8 14h3"/></svg>
+                      数据
+                    </div>
+                    <div class="si">
+                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><path d="M12 16v-4.5M12 8v.01"/></svg>
+                      关于
+                    </div>
+                  </aside>
+
+                  <div class="set-pane">
+                    <div class="set-h">启动与窗口</div>
+                    <div class="set-sub">这些开关只影响本机，不随账号同步。</div>
+                    <div class="set-group">
+                      <div class="set-row">
+                        <div class="txt">
+                          <div class="rt">开机自动启动</div>
+                          <div class="rs">登录 Windows 后静默启动，不弹窗，只在托盘运行</div>
+                        </div>
+                        <div class="rc"><button class="sw" aria-checked="true"></button></div>
+                      </div>
+                      <div class="set-row">
+                        <div class="txt">
+                          <div class="rt">关闭窗口时</div>
+                          <div class="rs">默认最小化到托盘，定时任务继续运行；要退出请用托盘菜单</div>
+                        </div>
+                        <div class="rc">
+                          <div class="seg"><span aria-selected="true">最小化到托盘</span><span>直接退出</span></div>
+                        </div>
+                      </div>
+                      <div class="set-row">
+                        <div class="txt">
+                          <div class="rt">同时只允许一个实例</div>
+                          <div class="rs">重复启动会唤起已运行的窗口，避免重复签到</div>
+                        </div>
+                        <div class="rc"><button class="sw" aria-checked="true"></button></div>
+                      </div>
+                    </div>
+
+                    <div class="set-h" style="margin-top:16px">外观</div>
+                    <div class="set-sub">与 Web 端使用同一套令牌，切换后立即生效。</div>
+                    <div class="set-group">
+                      <div class="set-row">
+                        <div class="txt">
+                          <div class="rt">主题</div>
+                          <div class="rs">「跟随系统」会读取 Windows 的浅色 / 深色设置</div>
+                        </div>
+                        <div class="rc">
+                          <div class="seg"><span>浅色</span><span>深色</span><span aria-selected="true">跟随系统</span></div>
+                        </div>
+                      </div>
+                      <div class="set-row">
+                        <div class="txt">
+                          <div class="rt">界面缩放</div>
+                          <div class="rs">高分屏下按系统缩放自动适配，可手动覆盖</div>
+                        </div>
+                        <div class="rc">
+                          <select class="sel" style="width:118px;height:28px;font-size:12px"><option>跟随系统</option><option>100%</option><option>125%</option><option>150%</option></select>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div class="grow"></div>
+                    <div class="row" style="justify-content:flex-end;gap:8px;padding-top:14px;border-top:1px solid var(--line);margin-top:14px">
+                      <span class="hint" style="margin-right:auto">设置即时保存，无需确认</span>
+                      <span class="btn btn-sm">恢复默认</span>
+                      <span class="btn btn-sm btn-p">完成</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ---------- 05 设置 数据与关于 ---------- -->
+    <div class="cell">
+      <div class="cell-h">
+        <span class="idx">05</span><span class="nm">设置 · 数据与关于</span>
+        <span class="env">独立窗口</span>
+        <button class="zoombtn">1:1</button>
+      </div>
+      <div class="frame" data-w="1240" data-h="860">
+        <div class="frame-inner">
+          <div class="page exe">
+            <div class="desk">
+              <div class="setwin">
+                <div class="wt">
+                  <img class="lg" src="assets/logo.png" alt="" />
+                  <span class="tt">设置</span>
+                  <div class="gr"></div>
+                  <span class="wbtn close"><svg width="10" height="10" viewBox="0 0 10 10"><path d="M2.4 2.4l5.2 5.2M7.6 2.4L2.4 7.6" stroke="currentColor" stroke-width="1.2"/></svg></span>
+                </div>
+                <div class="set-body">
+                  <aside class="set-nav">
+                    <div class="si">
+                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="3.2"/><path d="M19 12a7 7 0 0 0-.1-1l1.8-1.4-1.8-3.1-2.1.9a7 7 0 0 0-1.7-1L14.7 4h-3.4l-.4 2.3a7 7 0 0 0-1.7 1l-2.1-.9L5.3 9.6 7.1 11a7 7 0 0 0 0 2l-1.8 1.4 1.8 3.1 2.1-.9a7 7 0 0 0 1.7 1l.4 2.3h3.4l.4-2.3a7 7 0 0 0 1.7-1l2.1.9 1.8-3.1L19 13a7 7 0 0 0 0-1z"/></svg>
+                      常规
+                    </div>
+                    <div class="si">
+                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M18 8a6 6 0 1 0-12 0c0 6-2 7-2 7h16s-2-1-2-7z"/><path d="M10.5 20a2 2 0 0 0 3 0"/></svg>
+                      通知
+                    </div>
+                    <div class="si on">
+                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 7c0-1.1.9-2 2-2h12a2 2 0 0 1 2 2v3H4V7z"/><path d="M4 10h16v7a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-7z"/><path d="M8 14h3"/></svg>
+                      数据
+                    </div>
+                    <div class="si">
+                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><path d="M12 16v-4.5M12 8v.01"/></svg>
+                      关于
+                    </div>
+                  </aside>
+
+                  <div class="set-pane">
+                    <div class="set-h">数据目录</div>
+                    <div class="set-sub">便携模式下自动使用 exe 同级的 data 目录，不写注册表。</div>
+                    <div class="set-group">
+                      <div class="set-row">
+                        <div class="txt">
+                          <div class="rt" style="font-family:var(--mono);font-size:11.5px">C:\Users\fjjky\AutoSignBJMF</div>
+                          <div class="rs">配置、Cookie、日志都在这里；共占用 12.4 MB</div>
+                        </div>
+                        <div class="rc">
+                          <span class="btn btn-sm">打开</span>
+                          <span class="btn btn-sm">更改</span>
+                        </div>
+                      </div>
+                      <div class="set-row">
+                        <div class="txt">
+                          <div class="rt">日志保留</div>
+                          <div class="rs">超期日志在启动时自动清理</div>
+                        </div>
+                        <div class="rc">
+                          <select class="sel" style="width:104px;height:28px;font-size:12px"><option>7 天</option><option>30 天</option><option>90 天</option></select>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div class="set-h" style="margin-top:16px">备份与迁移</div>
+                    <div class="set-sub">导出文件包含账号与配置，不含日志。请勿分享给他人。</div>
+                    <div class="row" style="gap:8px">
+                      <span class="btn btn-sm">导出配置（.json）</span>
+                      <span class="btn btn-sm">导入配置</span>
+                      <span class="btn btn-sm btn-danger" style="margin-left:auto">清空全部日志</span>
+                    </div>
+
+                    <div class="set-h" style="margin-top:18px">关于</div>
+                    <div class="set-group">
+                      <div class="set-row">
+                        <div class="txt">
+                          <div class="rt">版本 v1.0.2 · Rust 版</div>
+                          <div class="rs">当前已是最新版本，上次检查 11-10 09:12</div>
+                        </div>
+                        <div class="rc"><span class="btn btn-sm">检查更新</span></div>
+                      </div>
+                      <div class="set-row">
+                        <div class="txt">
+                          <div class="rt">自动检查更新</div>
+                          <div class="rs">启动时静默检查，有新版本才提示</div>
+                        </div>
+                        <div class="rc"><button class="sw" aria-checked="true"></button></div>
+                      </div>
+                    </div>
+
+                    <div class="grow"></div>
+                    <div class="row" style="justify-content:flex-end;gap:8px;padding-top:14px;border-top:1px solid var(--line);margin-top:14px">
+                      <span class="hint" style="margin-right:auto">单实例 · 本地存储 · 不收集任何数据</span>
+                      <span class="btn btn-sm btn-p">完成</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ---------- 06 首次运行 空状态 ---------- -->
+    <div class="cell">
+      <div class="cell-h">
+        <span class="idx">06</span><span class="nm">首次运行 · 空状态</span>
+        <span class="env">空态</span>
+        <button class="zoombtn">1:1</button>
+      </div>
+      <div class="frame" data-w="1240" data-h="860">
+        <div class="frame-inner">
+          <div class="page exe">
+            <div class="desk">
+              <div class="win">
+                <div class="wt">
+                  <img class="lg" src="assets/logo.png" alt="" />
+                  <span class="tt">班级魔方自动签到</span>
+                  <span class="pill" style="height:19px;font-size:10px;padding:0 7px"><i class="d"></i>未运行</span>
+                  <div class="gr"></div>
+                  <span class="wbtn"><svg width="10" height="10" viewBox="0 0 10 10"><path d="M2 5h6" stroke="currentColor" stroke-width="1.2"/></svg></span>
+                  <span class="wbtn"><svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.2"><rect x="2.2" y="2.2" width="5.6" height="5.6" rx="1"/></svg></span>
+                  <span class="wbtn close"><svg width="10" height="10" viewBox="0 0 10 10"><path d="M2.4 2.4l5.2 5.2M7.6 2.4L2.4 7.6" stroke="currentColor" stroke-width="1.2"/></svg></span>
+                </div>
+
+                <div class="wb">
+                  <aside class="wside">
+                    <div class="sh">
+                      <span class="t">账号</span>
+                      <span class="c">0</span>
+                      <span class="grow"></span>
+                      <span class="btn btn-xs">＋ 扫码添加</span>
+                    </div>
+                    <div class="wlist" style="align-items:center;justify-content:center;padding:0 14px">
+                      <div class="empty" style="width:100%;padding:20px 16px">
+                        <div class="e-ico">
+                          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="9" cy="8" r="3.2"/><path d="M3.5 19a5.5 5.5 0 0 1 11 0"/><path d="M18 8v6M15 11h6"/></svg>
+                        </div>
+                        <div class="e-t">还没有账号</div>
+                        <div class="e-s">扫码添加第一个账号后，这里会显示状态与下次执行时间</div>
+                      </div>
+                    </div>
+                    <div class="sf">
+                      <div class="row-b" style="font-size:11.5px;color:var(--text-2)">
+                        <span>开机自启</span><button class="sw" aria-checked="false"></button>
+                      </div>
+                      <div class="row-b" style="font-size:11.5px;color:var(--text-2)">
+                        <span>关窗最小化到托盘</span><button class="sw" aria-checked="true"></button>
+                      </div>
+                      <div class="row" style="gap:6px;padding-top:2px">
+                        <span class="hint" style="flex:1">尚未开始调度</span>
+                        <span class="hint" style="color:var(--accent)">设置</span>
+                      </div>
+                    </div>
+                  </aside>
+
+                  <div class="wmain">
+                    <div class="wmh">
+                      <div style="flex:1">
+                        <div class="t">开始使用</div>
+                        <div class="s">三步之后，每天由后台自动签到，关闭窗口也会继续运行</div>
+                      </div>
+                      <span class="pill"><i class="d"></i>未运行</span>
+                    </div>
+
+                    <div class="wbody" style="justify-content:center;align-items:center">
+                      <div style="width:520px;display:flex;flex-direction:column;align-items:center;text-align:center">
+                        <img src="assets/logo.png" alt="" style="width:52px;height:52px" />
+                        <div style="font-size:17px;font-weight:640;letter-spacing:-0.02em;margin-top:14px">先添加一个账号</div>
+                        <div class="hint" style="margin-top:6px;font-size:12.5px;max-width:40ch">
+                          用微信扫码登录教学平台，姓名与班级会自动读取；之后填一次地点和时间即可长期使用。
+                        </div>
+
+                        <div style="display:flex;gap:10px;margin-top:16px">
+                          <span class="btn btn-p">扫码添加账号</span>
+                          <span class="btn">导入配置文件</span>
+                        </div>
+
+                        <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-top:22px;width:100%;text-align:left">
+                          <div style="border:1px solid var(--line);border-radius:10px;padding:11px 12px;background:var(--surface-2)">
+                            <div class="row" style="gap:6px"><span class="count-badge">1</span><span style="font-size:12px;font-weight:600">扫码登录</span></div>
+                            <div class="hint" style="margin-top:5px">不用抓包，微信扫一次即可</div>
+                          </div>
+                          <div style="border:1px solid var(--line);border-radius:10px;padding:11px 12px;background:var(--surface-2)">
+                            <div class="row" style="gap:6px"><span class="count-badge">2</span><span style="font-size:12px;font-weight:600">地点与时间</span></div>
+                            <div class="hint" style="margin-top:5px">坐标拾取 + 多个时间点</div>
+                          </div>
+                          <div style="border:1px solid var(--line);border-radius:10px;padding:11px 12px;background:var(--surface-2)">
+                            <div class="row" style="gap:6px"><span class="count-badge">3</span><span style="font-size:12px;font-weight:600">交给后台</span></div>
+                            <div class="hint" style="margin-top:5px">关窗也继续跑，失败会重试</div>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div class="sbar">
+                      <span class="dot"></span>
+                      <span>未运行</span>
+                      <span class="vsep"></span>
+                      <span class="hint">添加账号后自动开始调度</span>
+                      <div class="grow"></div>
+                      <span class="hint">数据目录 C:\Users\fjjky\AutoSignBJMF</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="rowcap">
+    <span class="pill acc">C · 托盘</span>
+    <span class="hint">常驻形态，菜单项与主界面能力一一对应</span>
+    <span class="line"></span>
+  </div>
+
+  <div class="mini-strip">
+    <div class="mini">
+      <div class="cell-h">
+        <span class="idx">07</span><span class="nm">托盘菜单</span>
+        <span class="env">300 × 268</span>
+      </div>
+      <div class="frame" data-w="340" data-h="344">
+        <div class="frame-inner">
+          <div style="width:340px;height:344px;background:#0b0e12;display:flex;align-items:flex-start;justify-content:flex-end;padding:12px">
+            <div class="tray">
+              <div class="tr-h">
+                <img src="assets/logo.png" alt="" style="width:16px;height:16px" />
+                <div style="flex:1">
+                  <div class="n">班级魔方自动签到</div>
+                  <div class="s">2 个账号运行中 · 下次 21:31</div>
+                </div>
+                <span class="dot ok"></span>
+              </div>
+              <div style="padding:3px 0">
+                <div class="ti">
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="4" width="18" height="16" rx="2.5"/><path d="M8 4v16M3 10h18"/></svg>
+                  打开主窗口<span class="kk">Ctrl+Shift+B</span>
+                </div>
+                <div class="ti">
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="m5 12.5 4.5 4.5L19 7"/></svg>
+                  立即签到全部
+                </div>
+                <div class="ti">
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="7" y="5" width="4" height="14" rx="1"/><rect x="14" y="5" width="4" height="14" rx="1"/></svg>
+                  暂停全部
+                </div>
+              </div>
+              <div class="tr-sep"></div>
+              <div style="padding:3px 0">
+                <div class="ti">开机自启<div style="flex:1"></div><button class="sw" aria-checked="true"></button></div>
+                <div class="ti">
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="3.2"/><path d="M19 12a7 7 0 0 0-.1-1l1.8-1.4-1.8-3.1-2.1.9a7 7 0 0 0-1.7-1L14.7 4h-3.4l-.4 2.3a7 7 0 0 0-1.7 1l-2.1-.9L5.3 9.6 7.1 11a7 7 0 0 0 0 2l-1.8 1.4 1.8 3.1 2.1-.9a7 7 0 0 0 1.7 1l.4 2.3h3.4l.4-2.3a7 7 0 0 0 1.7-1l2.1.9 1.8-3.1L19 13a7 7 0 0 0 0-1z"/></svg>
+                  设置
+                </div>
+                <div class="ti">检查更新<span class="kk">v1.0.2</span></div>
+              </div>
+              <div class="tr-sep"></div>
+              <div style="padding:3px 0">
+                <div class="ti" style="color:var(--bad)">退出</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="mini">
+      <div class="cell-h">
+        <span class="idx">08</span><span class="nm">关窗提示</span>
+        <span class="env">仅首次</span>
+      </div>
+      <div class="frame" data-w="340" data-h="344">
+        <div class="frame-inner">
+          <div style="width:340px;height:344px;background:#0b0e12;display:flex;flex-direction:column;justify-content:flex-end;align-items:flex-end;padding:14px;gap:9px">
+            <div style="width:300px;background:var(--surface);border:1px solid var(--line);border-radius:10px;box-shadow:var(--sh-pop);padding:11px 12px;display:flex;gap:9px">
+              <img src="assets/logo.png" alt="" style="width:18px;height:18px;flex:none;margin-top:1px" />
+              <div style="flex:1">
+                <div style="font-size:12px;font-weight:600">已最小化到托盘</div>
+                <div class="hint" style="margin-top:3px;line-height:1.5">定时签到仍在后台运行。要退出请右键托盘图标。</div>
+                <div class="row" style="gap:6px;margin-top:9px">
+                  <span class="btn btn-xs btn-p">打开主窗口</span>
+                  <span class="btn btn-xs btn-g">不再提示</span>
+                </div>
+              </div>
+            </div>
+            <div style="display:flex;align-items:center;gap:7px;padding:6px 10px;border-radius:8px;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.1)">
+              <img src="assets/logo.png" alt="" style="width:15px;height:15px" />
+              <span style="font-size:10px;color:#9aa4b2">托盘图标 · 双击打开主窗口</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div style="flex:1;min-width:260px;padding-top:26px">
+      <div class="note">
+        <b>关窗默认进托盘，不是退出。</b>定时签到靠常驻进程，关窗就退出等于当天不签。首次关闭时给一次说明（08），勾「不再提示」后静默。
+        要真正退出走托盘菜单最后一项。
+      </div>
+      <div class="note" style="margin-top:10px;border-left-color:var(--ok)">
+        <b>托盘不是另一套功能。</b>「立即签到全部 / 暂停全部 / 开机自启 / 设置」四项与主窗口一一对应，
+        只是把最常用的动作从三次点击压到一次；两边的开关状态双向同步。
+      </div>
+    </div>
+  </div>
+
+  <div class="note" style="margin-top:22px">
+    <b>本端已实现的能力：</b>扫码添加/更新账号 · 地点（经纬度 + 精度 + 拾取）· 多时间点增删 · <b>重试次数与间隔可自行设置</b> ·
+    微信 / QQ 通知 Key · 启用与暂停 · 立即签到 · 日志查看/复制/清空/打开目录 · 明暗主题 · 开机自启 · 关窗到托盘 · 单实例 · 托盘 · 数据目录与更新。
+  </div>
+</div>
+
+<script src="proto.js?v=20261111b"></script>
+</body>
+</html>

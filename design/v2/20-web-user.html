@@ -1,0 +1,475 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>UI v2 · Web 用户端 · AutoSignBJMF</title>
+<link rel="stylesheet" href="proto.css?v=20261111b" />
+<style>
+  /* 二维码：由 proto.js 用 data-qr 生成 SVG（示意图案，不是真实可扫码内容） */
+  .fakeqr { width: 168px; height: 168px; background: #fff; }
+  .fakeqr svg { display: block; width: 100%; height: 100%; }
+  .fakeqr rect { shape-rendering: crispEdges; }
+
+  .stepbar {
+    flex: none; height: 52px; display: flex; align-items: center; gap: 14px;
+    padding: 0 28px; border-bottom: 1px solid var(--line); background: var(--surface);
+  }
+  .rowcap { display: flex; align-items: center; gap: 10px; margin: 24px 0 11px; }
+  .rowcap .line { flex: 1; height: 1px; background: var(--line); }
+  .note-line { display: flex; gap: 9px; align-items: flex-start; }
+  .note-line .ni { flex: none; width: 20px; height: 20px; border-radius: 6px; display: grid; place-items: center; background: var(--surface-3); color: var(--text-2); margin-top: 1px; }
+</style>
+</head>
+<body>
+
+<div class="board-bar">
+  <img class="bb-logo" src="assets/logo.png" alt="" />
+  <div>
+    <div class="bb-t">UI v2 · Web 用户端</div>
+    <div class="bb-s">契约级原型 · 3 屏 · 登录 → 地点与时间 → 通知与提交</div>
+  </div>
+  <span class="grow"></span>
+  <a class="btn btn-sm" href="10-exe.html">← 桌面端</a>
+  <a class="btn btn-sm" href="30-web-admin.html">管理端 →</a>
+  <button class="btn btn-sm" id="themeBtn">切换深色</button>
+</div>
+
+<div class="board">
+  <div class="board-lede">
+    <h1>Web 用户端：一页三步，显式保存</h1>
+    <p>
+      这 3 屏只做「组件契约」，不铺开状态与边缘页面 —— 目的是让 Rust 桌面端与 Web 用同一套字段、同一套文案、同一套状态语义。
+      控件 34px、行高 44px，比桌面端松一档；除容器外不允许有别的差异。
+    </p>
+  </div>
+
+  <div class="rowcap">
+    <span class="pill acc">主流程</span>
+    <span class="hint">同一屏内切换步骤，不跳页；底部操作栏常驻</span>
+    <span class="line"></span>
+    <span class="hint">1240 × 860</span>
+  </div>
+
+  <div class="sheet">
+
+    <!-- ---------- 01 扫码登录 ---------- -->
+    <div class="cell">
+      <div class="cell-h">
+        <span class="idx">01</span><span class="nm">扫码登录</span>
+        <span class="env">步骤 1</span>
+        <button class="zoombtn">1:1</button>
+      </div>
+      <div class="frame" data-w="1240" data-h="860">
+        <div class="frame-inner">
+          <div class="page web">
+            <header class="tp">
+              <img class="lg" src="assets/logo.png" alt="" />
+              <div>
+                <div class="tp-t">班级魔方自动签到</div>
+                <div class="tp-s">扫码一次，之后每天按时自动签到</div>
+              </div>
+              <div class="grow"></div>
+              <span class="pill ok"><i class="d"></i>服务正常</span>
+              <span class="btn btn-sm">管理端</span>
+              <span class="icon-btn"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M20 14.5A8.5 8.5 0 0 1 9.5 4a8.5 8.5 0 1 0 10.5 10.5z"/></svg></span>
+            </header>
+
+            <div class="stepbar">
+              <div class="stepper">
+                <div class="st on"><span class="n">1</span><span class="tx">扫码登录</span></div>
+                <span class="bar"></span>
+                <div class="st"><span class="n">2</span><span class="tx">地点与时间</span></div>
+                <span class="bar"></span>
+                <div class="st"><span class="n">3</span><span class="tx">通知与提交</span></div>
+              </div>
+              <div class="grow"></div>
+              <span class="hint">登录凭证约 30 天有效，过期会推送提醒</span>
+            </div>
+
+            <main class="grow" style="display:flex;align-items:center;justify-content:center;padding:0 28px">
+              <div style="width:848px">
+                <div class="ptitle">扫码登录教学平台</div>
+                <div class="psub" style="font-size:13px">用微信扫一次码即可完成登录。之后每天由服务器按时提交签到，与这个页面是否打开无关。</div>
+
+                <div class="card" style="margin-top:16px;display:grid;grid-template-columns:340px minmax(0,1fr)">
+                  <div style="padding:22px 26px;background:var(--surface-2);border-right:1px solid var(--line);display:flex;flex-direction:column;align-items:center;gap:11px">
+                    <div class="qr live" style="padding:0;overflow:hidden">
+                      <div class="fakeqr" data-qr></div>
+                    </div>
+                    <div style="text-align:center">
+                      <div style="font-size:13px;font-weight:600">用微信扫码并确认</div>
+                      <div class="hint" style="margin-top:2px">二维码 2 分钟内有效 · 剩余 01:42</div>
+                    </div>
+                    <div class="row" style="gap:6px">
+                      <span class="btn btn-sm btn-p">刷新二维码</span>
+                      <span class="btn btn-sm">检测服务</span>
+                    </div>
+                    <div class="hint" style="font-family:var(--mono);font-size:10.5px">会话 8f3c9a · a1d2</div>
+                  </div>
+
+                  <div style="padding:22px 24px;display:flex;flex-direction:column;gap:13px">
+                    <div class="note-line">
+                      <span class="ni"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14" stroke-linecap="round"/></svg></span>
+                      <div>
+                        <div style="font-size:12.5px;font-weight:600">扫码即登录</div>
+                        <div class="hint">姓名与班级自动读取，不需要手填。</div>
+                      </div>
+                    </div>
+                    <div class="note-line">
+                      <span class="ni"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 21s7-6.1 7-11a7 7 0 1 0-14 0c0 4.9 7 11 7 11z"/><circle cx="12" cy="10" r="2.6"/></svg></span>
+                      <div>
+                        <div style="font-size:12.5px;font-weight:600">之后再填地点与时间</div>
+                        <div class="hint">一次配置，长期生效；可以随时回来改。</div>
+                      </div>
+                    </div>
+                    <div class="note-line">
+                      <span class="ni"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="10" width="16" height="10" rx="2"/><path d="M8 10V7.5a4 4 0 0 1 8 0V10"/></svg></span>
+                      <div>
+                        <div style="font-size:12.5px;font-weight:600">凭证不外泄</div>
+                        <div class="hint">Cookie 只保存在服务端，页面与日志都不展示完整值。</div>
+                      </div>
+                    </div>
+                    <div class="note-line">
+                      <span class="ni"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="7" y="5" width="4" height="14" rx="1"/><rect x="14" y="5" width="4" height="14" rx="1"/></svg></span>
+                      <div>
+                        <div style="font-size:12.5px;font-weight:600">随时可停</div>
+                        <div class="hint">暂停、改时间或删除任务，都不需要再次扫码。</div>
+                      </div>
+                    </div>
+
+                    <div class="grow"></div>
+                    <div class="alert info" style="padding:9px 11px">
+                      <span class="ai"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 16v-4.5M12 8v.01"/></svg></span>
+                      <div>需要每次扫码吗？凭证过期才需要；重新扫码后会带出上次的地点与时间。</div>
+                    </div>
+                  </div>
+                </div>
+
+                <div class="row-b" style="margin-top:14px">
+                  <span class="hint">扫码失败或二维码一直加载不出来？可以改为手动填写 Cookie。</span>
+                  <span class="btn btn-sm btn-g">手动填写 Cookie →</span>
+                </div>
+              </div>
+            </main>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ---------- 02 地点与时间 ---------- -->
+    <div class="cell">
+      <div class="cell-h">
+        <span class="idx">02</span><span class="nm">地点与时间</span>
+        <span class="env">步骤 2</span>
+        <button class="zoombtn">1:1</button>
+      </div>
+      <div class="frame" data-w="1240" data-h="860">
+        <div class="frame-inner">
+          <div class="page web">
+            <header class="tp">
+              <img class="lg" src="assets/logo.png" alt="" />
+              <div>
+                <div class="tp-t">班级魔方自动签到</div>
+                <div class="tp-s">张明远 · 2023 级计算机 1 班</div>
+              </div>
+              <div class="grow"></div>
+              <span class="pill ok"><i class="d"></i>已登录</span>
+              <span class="btn btn-sm">管理端</span>
+              <span class="icon-btn"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M20 14.5A8.5 8.5 0 0 1 9.5 4a8.5 8.5 0 1 0 10.5 10.5z"/></svg></span>
+            </header>
+
+            <div class="stepbar">
+              <div class="stepper">
+                <div class="st done"><span class="n">✓</span><span class="tx">扫码登录</span></div>
+                <span class="bar"></span>
+                <div class="st on"><span class="n">2</span><span class="tx">地点与时间</span></div>
+                <span class="bar"></span>
+                <div class="st"><span class="n">3</span><span class="tx">通知与提交</span></div>
+              </div>
+              <div class="grow"></div>
+              <span class="hint">已识别：张明远 · 2000001</span>
+            </div>
+
+            <main class="grow" style="overflow:hidden;padding-top:18px">
+              <div class="wrap" style="display:grid;grid-template-columns:minmax(0,1fr) 320px;gap:16px;align-items:start">
+
+                <div class="stack">
+                  <div class="card">
+                    <div class="ch">
+                      <span class="ico"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 21s7-6.1 7-11a7 7 0 1 0-14 0c0 4.9 7 11 7 11z"/><circle cx="12" cy="10" r="2.6"/></svg></span>
+                      <div>
+                        <div class="ct">签到地点</div>
+                        <div class="cs">与签到记录里的定位保持一致，一般取教室坐标</div>
+                      </div>
+                      <div class="grow"></div>
+                      <span class="pill plain">已从上次任务带入</span>
+                    </div>
+                    <div class="cb">
+                      <div class="row" style="gap:10px;align-items:flex-end">
+                        <div class="field" style="flex:1"><div class="lbl">纬度</div><input class="in mono" value="39.908720" /></div>
+                        <div class="field" style="flex:1"><div class="lbl">经度</div><input class="in mono" value="116.397450" /></div>
+                        <div class="field" style="width:96px"><div class="lbl">精度</div><select class="sel"><option>30 米</option><option>50 米</option><option>100 米</option></select></div>
+                        <span class="btn"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 21s7-6.1 7-11a7 7 0 1 0-14 0c0 4.9 7 11 7 11z"/><circle cx="12" cy="10" r="2.6"/></svg>拾取</span>
+                      </div>
+                      <div class="row-b">
+                        <span class="hint">支持直接粘贴「39.9087, 116.3975」整段坐标，会自动拆分。</span>
+                        <span class="btn btn-sm btn-g">用当前定位</span>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div class="card">
+                    <div class="ch">
+                      <span class="ico"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 1.8"/></svg></span>
+                      <div>
+                        <div class="ct">每天执行时间</div>
+                        <div class="cs">可加多条；服务器按北京时间触发，误差通常小于 1 秒</div>
+                      </div>
+                    </div>
+                    <div class="cb">
+                      <div class="row" style="gap:8px;flex-wrap:wrap">
+                        <span class="chip">07:30:00<i class="x">×</i></span>
+                        <span class="chip">21:31:00<i class="x">×</i></span>
+                        <input class="in mono" style="width:108px;height:30px;font-size:12px;padding:0 8px" value="12:00:00" />
+                        <span class="btn btn-sm">添加</span>
+                        <span class="chip add">常用 07:10 / 08:00 / 22:00</span>
+                      </div>
+                      <div class="sep"></div>
+                      <div class="row" style="gap:7px">
+                        <span class="lbl">失败重试</span>
+                        <input class="in" style="width:50px;height:30px;text-align:center;padding:0" value="3" />
+                        <span class="lbl">次，间隔</span>
+                        <input class="in" style="width:50px;height:30px;text-align:center;padding:0" value="5" />
+                        <span class="lbl">分钟</span>
+                        <div class="grow"></div>
+                        <span class="hint">1–10 次 · 1–60 分钟</span>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div class="card">
+                    <div class="ch">
+                      <span class="ico"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3.5" y="5" width="17" height="15" rx="2.5"/><path d="M8 3.5V6M16 3.5V6M3.5 10h17"/></svg></span>
+                      <div>
+                        <div class="ct">生效日期</div>
+                        <div class="cs">不限定范围时，长期每天执行</div>
+                      </div>
+                      <div class="grow"></div>
+                      <span class="lbl">长期执行</span>
+                      <button class="sw" aria-checked="true"></button>
+                    </div>
+                    <div class="cb">
+                      <div class="row-b">
+                        <span class="hint">当前：每天都执行，无结束日期</span>
+                        <span class="btn btn-sm btn-g">改为指定起止日期</span>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div class="card">
+                    <div class="ch bd" style="height:auto;padding:12px 16px">
+                      <span class="ico gray" style="width:22px;height:22px;border-radius:6px"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 8v5M12 16.5v.01"/><circle cx="12" cy="12" r="9"/></svg></span>
+                      <div class="hint" style="flex:1">提交后由服务器调度，<b style="color:var(--text-2)">关掉页面、关掉电脑都不影响</b>。</div>
+                    </div>
+                  </div>
+                </div>
+
+                <div class="stack">
+                  <div class="card">
+                    <div class="ch bd"><div class="ct">当前账号</div><div class="grow"></div><span class="pill ok"><i class="d"></i>已登录</span></div>
+                    <div class="cb" style="gap:9px">
+                      <div class="row" style="gap:9px">
+                        <span class="ava">张</span>
+                        <div>
+                          <div style="font-size:13px;font-weight:600">张明远</div>
+                          <div class="hint">2023 级计算机 1 班 · 2000001</div>
+                        </div>
+                      </div>
+                      <div class="sep"></div>
+                      <div class="kv"><span class="k">凭证有效期</span><span class="v">约 30 天</span></div>
+                      <div class="kv"><span class="k">上次扫码</span><span class="v">11-09 21:31</span></div>
+                    </div>
+                  </div>
+
+                  <div class="card">
+                    <div class="ch bd"><div class="ct">任务状态</div><div class="grow"></div><span class="pill"><i class="d"></i>未启用</span></div>
+                    <div class="cb" style="gap:9px">
+                      <div class="hint">完成第 3 步并保存后开始调度。</div>
+                      <div class="kv"><span class="k">今天已签到</span><span class="v">1 / 2</span></div>
+                      <div class="kv"><span class="k">最近一次</span><span class="v">07:30 成功</span></div>
+                    </div>
+                  </div>
+
+                  <div class="card">
+                    <div class="ch bd"><div class="ct">运行规则</div><div class="grow"></div><span class="hint">只读</span></div>
+                    <div class="cb" style="gap:8px">
+                      <div class="kv"><span class="k">时区</span><span class="v">北京时间 UTC+8</span></div>
+                      <div class="kv"><span class="k">日志保留</span><span class="v">7 天</span></div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </main>
+
+            <footer style="flex:none;height:60px;border-top:1px solid var(--line);background:var(--surface);display:flex;align-items:center">
+              <div class="wrap row-b">
+                <span class="hint">第 2 步，共 3 步 · 坐标与时间会随保存一起提交</span>
+                <div class="row">
+                  <span class="btn btn-g">上一步</span>
+                  <span class="btn btn-p">下一步：通知与提交</span>
+                </div>
+              </div>
+            </footer>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ---------- 03 通知与提交 ---------- -->
+    <div class="cell">
+      <div class="cell-h">
+        <span class="idx">03</span><span class="nm">通知与提交</span>
+        <span class="env">步骤 3</span>
+        <button class="zoombtn">1:1</button>
+      </div>
+      <div class="frame" data-w="1240" data-h="860">
+        <div class="frame-inner">
+          <div class="page web">
+            <header class="tp">
+              <img class="lg" src="assets/logo.png" alt="" />
+              <div>
+                <div class="tp-t">班级魔方自动签到</div>
+                <div class="tp-s">张明远 · 2023 级计算机 1 班</div>
+              </div>
+              <div class="grow"></div>
+              <span class="pill ok"><i class="d"></i>已登录</span>
+              <span class="btn btn-sm">管理端</span>
+              <span class="icon-btn"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M20 14.5A8.5 8.5 0 0 1 9.5 4a8.5 8.5 0 1 0 10.5 10.5z"/></svg></span>
+            </header>
+
+            <div class="stepbar">
+              <div class="stepper">
+                <div class="st done"><span class="n">✓</span><span class="tx">扫码登录</span></div>
+                <span class="bar"></span>
+                <div class="st done"><span class="n">✓</span><span class="tx">地点与时间</span></div>
+                <span class="bar"></span>
+                <div class="st on"><span class="n">3</span><span class="tx">通知与提交</span></div>
+              </div>
+              <div class="grow"></div>
+              <span class="hint">两种通知都可留空，只影响是否收到推送</span>
+            </div>
+
+            <main class="grow" style="overflow:hidden;padding-top:18px">
+              <div class="wrap" style="display:grid;grid-template-columns:minmax(0,1fr) 320px;gap:16px;align-items:start">
+
+                <div class="stack">
+                  <div class="card">
+                    <div class="ch">
+                      <span class="ico"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M18 8a6 6 0 1 0-12 0c0 6-2 7-2 7h16s-2-1-2-7z"/><path d="M10.5 20a2 2 0 0 0 3 0"/></svg></span>
+                      <div>
+                        <div class="ct">签到通知</div>
+                        <div class="cs">签到结果推送到微信或 QQ；留空即不推送</div>
+                      </div>
+                    </div>
+                    <div class="cb">
+                      <div class="field">
+                        <div class="lbl"><button class="sw" aria-checked="true"></button>微信通知 · Server 酱</div>
+                        <input class="in mono" value="SCT••••••••••••4f2a" />
+                        <div class="hint">在 sct.ftqq.com 申请 SendKey，粘贴到这里即可。</div>
+                      </div>
+                      <div class="field">
+                        <div class="lbl"><button class="sw" aria-checked="false"></button>QQ 通知 · Qmsg 酱</div>
+                        <input class="in mono ro" value="未配置" readonly />
+                        <div class="hint">在 qmsg.zendee.cn 申请 Key；与微信二选一即可。</div>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div class="card">
+                    <div class="ch bd"><div class="ct">提交前检查</div><div class="grow"></div><span class="hint">3 项必填</span></div>
+                    <div class="list">
+                      <div class="li"><span class="dot ok"></span><span class="m">账号已登录：张明远 · 2000001</span><span class="hint">来自步骤 1</span></div>
+                      <div class="li"><span class="dot ok"></span><span class="m">地点已填写：39.908720, 116.397450</span><span class="hint">精度 30 米</span></div>
+                      <div class="li"><span class="dot ok"></span><span class="m">执行时间：07:30:00 · 21:31:00</span><span class="hint">共 2 个</span></div>
+                    </div>
+                  </div>
+
+                  <div class="card">
+                    <div class="ch bd" style="height:auto;padding:12px 16px">
+                      <span class="ico gray" style="width:22px;height:22px;border-radius:6px"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="10" width="16" height="10" rx="2"/><path d="M8 10V7.5a4 4 0 0 1 8 0V10"/></svg></span>
+                      <div class="hint" style="flex:1">保存后 Cookie 只会写进你自己的任务记录，管理员也看不到完整凭证。</div>
+                    </div>
+                  </div>
+                </div>
+
+                <div class="stack">
+                  <div class="card">
+                    <div class="ch bd"><div class="ct">任务摘要</div><div class="grow"></div><span class="pill plain">未保存</span></div>
+                    <div class="cb" style="gap:9px">
+                      <div class="kv"><span class="k">账号</span><span class="v">张明远</span></div>
+                      <div class="kv"><span class="k">班级</span><span class="v">2023 级计算机 1 班</span></div>
+                      <div class="kv"><span class="k">地点</span><span class="v mono">39.90872, 116.39745</span></div>
+                      <div class="kv"><span class="k">时间</span><span class="v mono">07:30 · 21:31</span></div>
+                      <div class="kv"><span class="k">通知</span><span class="v">微信已开启</span></div>
+                      <div class="sep"></div>
+                      <div class="kv"><span class="k">首次执行</span><span class="v">今天 21:31</span></div>
+                    </div>
+                  </div>
+
+                  <div class="card">
+                    <div class="ch bd"><div class="ct">通知预览</div><div class="grow"></div><span class="hint">示例</span></div>
+                    <div class="cb">
+                      <div style="border:1px solid var(--line);border-radius:10px;background:var(--surface-2);padding:11px 12px">
+                        <div class="row" style="gap:7px">
+                          <span class="dot ok"></span>
+                          <span style="font-size:12px;font-weight:600">签到成功 · 张明远</span>
+                        </div>
+                        <div class="hint" style="margin-top:6px;line-height:1.7;font-family:var(--mono);font-size:10.5px">
+                          时间 2026-11-10 21:31<br />
+                          地点 39.9088, 116.3974<br />
+                          状态 本次签到成功
+                        </div>
+                      </div>
+                      <div class="hint">失败时同一格式，状态改为失败原因，并附带重试次数。</div>
+                    </div>
+                  </div>
+
+                  <div class="card">
+                    <div class="ch bd"><div class="ct">保存之后</div></div>
+                    <div class="cb" style="gap:8px">
+                      <div class="row" style="gap:7px;align-items:flex-start"><span class="dot ok" style="margin-top:6px"></span><span class="hint" style="flex:1">立即开始调度，屏幕上会显示下次执行倒计时</span></div>
+                      <div class="row" style="gap:7px;align-items:flex-start"><span class="dot ok" style="margin-top:6px"></span><span class="hint" style="flex:1">失败按间隔重试，耗尽后推送一条失败通知</span></div>
+                      <div class="row" style="gap:7px;align-items:flex-start"><span class="dot ok" style="margin-top:6px"></span><span class="hint" style="flex:1">之后可在任务页暂停、立即签到或改时间</span></div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </main>
+
+            <footer style="flex:none;height:60px;border-top:1px solid var(--line);background:var(--surface);display:flex;align-items:center">
+              <div class="wrap row-b">
+                <span class="hint" style="display:flex;align-items:center;gap:7px"><i class="dot ok"></i>3 项检查通过，可以保存</span>
+                <div class="row">
+                  <span class="btn btn-g">上一步</span>
+                  <span class="btn">仅保存</span>
+                  <span class="btn btn-p">保存并启用</span>
+                </div>
+              </div>
+            </footer>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="note" style="margin-top:22px">
+    <b>与桌面端一一对应：</b>地点输入组（纬度 / 经度 / 精度 / 拾取）、时间点编辑器（chips + 添加 + 重试次数与间隔）、
+    通知（两个渠道各一个开关 + Key）、状态四态、日志动作（复制 / 清空 / 打开目录）全部同名同形。
+    <b>唯一差异：</b>Web 首次创建时主按钮为「保存并启用」，桌面端因为是本地常驻、账号创建即启用，按钮为「保存」。
+  </div>
+</div>
+
+<script src="proto.js?v=20261111b"></script>
+</body>
+</html>

@@ -1,0 +1,748 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>UI v2 · 设计语言与组件规范 · AutoSignBJMF</title>
+<link rel="stylesheet" href="proto.css?v=20261111b" />
+<style>
+  /* ---- 风格板局部 ---- */
+  .toc { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 26px; }
+  .toc a {
+    display: inline-flex; align-items: center; height: 26px; padding: 0 10px;
+    border: 1px solid var(--line); border-radius: 999px; background: var(--surface);
+    font-size: 12px; color: var(--text-2); text-decoration: none;
+  }
+  .toc a:hover { border-color: var(--line-2); color: var(--text); }
+
+  .force-dark {
+    --bg: #101317; --surface: #191d23; --surface-2: #1d2229; --surface-3: #232830;
+    --line: #2b313a; --line-2: #3a424d;
+    --text: #eef1f5; --text-2: #a9b2bf; --text-3: #7d8794;
+    --accent: #5b8cf7; --accent-h: #7aa1f9; --accent-soft: #17253c; --accent-line: #2b4064;
+    --ok: #34d3bd; --ok-soft: #0e2a26; --ok-line: #1d4b44;
+    --warn: #f0b44a; --warn-soft: #2a2113; --warn-line: #4a3a1c;
+    --bad: #f08a80; --bad-soft: #2c1614; --bad-line: #4d2a26;
+    --sh-1: 0 1px 2px rgba(0,0,0,.3); --sh-pop: 0 18px 44px -12px rgba(0,0,0,.62);
+    background: var(--bg); color: var(--text);
+    border: 1px solid var(--line); border-radius: var(--r-lg); padding: 16px;
+  }
+
+  .dir-card {
+    display: grid; grid-template-columns: 1fr 1fr; gap: 0;
+    border: 1px solid var(--line); border-radius: var(--r-lg); overflow: hidden; background: var(--surface);
+  }
+  .dir-card > div { padding: 18px 20px; }
+  .dir-card > div + div { border-left: 1px solid var(--line); background: var(--surface-2); }
+  .dir-k { font-size: 11px; font-weight: 600; color: var(--text-3); letter-spacing: .04em; }
+  .dir-v { font-size: 15px; font-weight: 620; letter-spacing: -0.02em; margin: 5px 0 8px; }
+  .dir-card p { margin: 0; font-size: 12.5px; color: var(--text-2); line-height: 1.65; }
+  @media (max-width: 780px) { .dir-card { grid-template-columns: 1fr; } .dir-card > div + div { border-left: 0; border-top: 1px solid var(--line); } }
+
+  .logo-row { display: flex; align-items: flex-end; gap: 22px; flex-wrap: wrap; }
+  .logo-row figure { margin: 0; display: flex; flex-direction: column; align-items: center; gap: 7px; }
+  .logo-row figcaption { font-family: var(--mono); font-size: 10.5px; color: var(--text-3); }
+  .logo-pad { display: grid; place-items: center; border: 1px dashed var(--line-2); border-radius: 8px; }
+
+  .density { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+  @media (max-width: 900px) { .density { grid-template-columns: 1fr; } }
+  .density .dbox { border: 1px solid var(--line); border-radius: var(--r-md); overflow: hidden; background: var(--surface); }
+  .density .dh { padding: 8px 11px; border-bottom: 1px solid var(--line); background: var(--surface-2); font-size: 11.5px; font-weight: 600; color: var(--text-2); display: flex; justify-content: space-between; }
+  .density .dh span { font-family: var(--mono); font-weight: 400; font-size: 10.5px; color: var(--text-3); }
+  .density .db { padding: 11px; display: flex; flex-direction: column; gap: 8px; }
+
+  .rule-list { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 9px; }
+  .rule-list li { display: flex; gap: 9px; font-size: 12.5px; color: var(--text-2); line-height: 1.6; }
+  .rule-list li b { color: var(--text); font-weight: 600; }
+  .rule-list .mk { flex: none; width: 15px; height: 15px; margin-top: 3px; border-radius: 4px; display: grid; place-items: center; font-size: 9px; font-weight: 700; }
+  .rule-list .mk.y { background: var(--ok-soft); color: var(--ok); }
+  .rule-list .mk.n { background: var(--bad-soft); color: var(--bad); }
+
+  .q-list { display: flex; flex-direction: column; gap: 10px; }
+  .q {
+    display: grid; grid-template-columns: 22px 1fr auto; gap: 10px; align-items: start;
+    border: 1px solid var(--line); border-radius: var(--r-md); background: var(--surface); padding: 12px 14px;
+  }
+  .q .qn { width: 22px; height: 22px; border-radius: 50%; background: var(--accent-soft); border: 1px solid var(--accent-line); color: var(--accent); display: grid; place-items: center; font-size: 11px; font-weight: 700; }
+  .q .qt { font-size: 12.5px; font-weight: 600; }
+  .q .qs { font-size: 12px; color: var(--text-3); line-height: 1.6; margin-top: 3px; }
+  .q .qa { font-size: 11.5px; color: var(--text-2); white-space: nowrap; padding-top: 2px; }
+  .q .qa b { display: block; font-weight: 600; color: var(--text); }
+
+  /* 对等矩阵 */
+  .mx { width: 100%; border-collapse: collapse; font-size: 12px; }
+  .mx th {
+    text-align: left; font-size: 11px; font-weight: 600; color: var(--text-3);
+    padding: 8px 10px; border-bottom: 1px solid var(--line); background: var(--surface-2);
+    white-space: nowrap;
+  }
+  .mx td { padding: 8px 10px; border-bottom: 1px solid var(--line); vertical-align: middle; }
+  .mx tr:last-child td { border-bottom: 0; }
+  .mx tbody tr:hover td { background: var(--surface-2); }
+  .mx .yes { color: var(--ok); font-weight: 700; }
+  .mx .no { color: var(--text-3); }
+  .mx .warn { color: var(--warn); font-weight: 700; }
+  .mx .cap { font-size: 10.5px; color: var(--text-3); }
+</style>
+</head>
+<body>
+
+<div class="board-bar">
+  <img class="bb-logo" src="assets/logo.png" alt="" />
+  <div>
+    <div class="bb-t">UI v2 · 设计语言</div>
+    <div class="bb-s">令牌 / 组件 / 对等矩阵 — 三端共用的唯一来源</div>
+  </div>
+  <span class="grow"></span>
+  <a class="btn btn-sm" href="10-exe.html">桌面端 exe</a>
+  <a class="btn btn-sm" href="20-web-user.html">Web 用户端</a>
+  <a class="btn btn-sm" href="30-web-admin.html">管理端</a>
+  <button class="btn btn-sm" id="themeBtn">切换深色</button>
+</div>
+
+<div class="board">
+  <div class="board-lede">
+    <h1>「静默工具」— 中性画布 · 描边分层 · 一个强调色</h1>
+    <p>
+      给一个每天只被想起一次、却要 7×24 常驻的工具做界面。判断标准不是首屏好看，而是第 200 次打开时是否依然一眼看清
+      「今天签到了没有、下次几点、哪里出错了」。所以：不堆装饰，层级交给排版；阴影只给浮层；状态色只表达状态。
+    </p>
+    <p style="margin-top:8px">
+      原型拆成三份，互不混排：<a href="10-exe.html" style="color:var(--accent);font-weight:550">10-exe</a>（Rust 桌面端，6 屏 + 托盘）、
+      <a href="20-web-user.html" style="color:var(--accent);font-weight:550">20-web-user</a>（3 屏，组件契约）、
+      <a href="30-web-admin.html" style="color:var(--accent);font-weight:550">30-web-admin</a>（3 屏，含批量）。
+      三份共用本页的令牌与组件，差异只在密度与容器。
+    </p>
+  </div>
+
+  <nav class="toc">
+    <a href="#s1">01 参考与取舍</a>
+    <a href="#s2">02 色彩</a>
+    <a href="#s3">03 字体</a>
+    <a href="#s4">04 空间与控件</a>
+    <a href="#s5">05 组件</a>
+    <a href="#s6">06 状态语义</a>
+    <a href="#s7">07 品牌标识</a>
+    <a href="#s8">08 三端密度</a>
+    <a href="#s9">09 功能对等矩阵</a>
+    <a href="#s10">10 动效与可访问性</a>
+    <a href="#s11">11 决策记录</a>
+  </nav>
+
+  <!-- ============ 01 ============ -->
+  <section class="spec-sec" id="s1">
+    <h2><span class="num">01</span>参考与取舍</h2>
+    <p>三家参考各取一段，不整包照搬。共同点是：界面自身要「消失」，把注意力留给状态和数据。</p>
+    <div class="spec-grid c2">
+      <div class="sbox">
+        <div class="shd">ElegantClipboard（GPUI 2.0）</div>
+        <div class="sbd col">
+          <ul class="rule-list">
+            <li><span class="mk y">取</span><span><b>可配圆角 + 明暗双主题 + 跟随系统强调色</b>，本地优先的「安静桌面工具」气质。</span></li>
+            <li><span class="mk y">取</span><span><b>托盘常驻、不抢焦点</b>的窗口行为，映射到我们的「关窗到托盘」。</span></li>
+            <li><span class="mk n">弃</span><span>Mica / 毛玻璃材质 —— WebView 与 tkinter 都还原不了，只做视觉上限承诺不了落地。</span></li>
+          </ul>
+        </div>
+      </div>
+      <div class="sbox">
+        <div class="shd">dbx（Tauri + shadcn-vue）</div>
+        <div class="sbd col">
+          <ul class="rule-list">
+            <li><span class="mk y">取</span><span><b>紧凑桌面密度</b>：工具条 32px 高、侧栏 240px、状态 pill、表格悬浮才出操作。</span></li>
+            <li><span class="mk y">取</span><span><b>侧栏 + 工具条 + 主区 + 详情抽屉</b>的四段结构，管理端直接沿用。</span></li>
+            <li><span class="mk n">弃</span><span>多标签、命令面板、代码编辑器等重型范式 —— 我们的任务只有「配一次、看结果」。</span></li>
+          </ul>
+        </div>
+      </div>
+      <div class="sbox">
+        <div class="shd">Apple / SF 体系</div>
+        <div class="sbd col">
+          <ul class="rule-list">
+            <li><span class="mk y">取</span><span><b>字号层级与留白节奏</b>：19 / 13.5 / 12 / 11.5 四档，靠字重与灰度拉层级。</span></li>
+            <li><span class="mk y">取</span><span><b>单一强调色</b>，语义色只在需要判断的地方出现。</span></li>
+            <li><span class="mk n">弃</span><span>营销页式大标题、巨幅留白 —— 这是工具，一屏要装下地点、时间、日志。</span></li>
+          </ul>
+        </div>
+      </div>
+      <div class="sbox">
+        <div class="shd">2026 数据型界面共识</div>
+        <div class="sbd col">
+          <ul class="rule-list">
+            <li><span class="mk y">取</span><span><b>描边优先于阴影</b>：1px hairline 分层，阴影只留给菜单/弹窗/Toast。</span></li>
+            <li><span class="mk y">取</span><span><b>先设计空状态与骨架屏</b>，再设计有数据的样子 —— 新用户第一眼看到的就是空。</span></li>
+            <li><span class="mk y">取</span><span><b>150–200ms 的确认型动效</b>：只解释「刚刚发生了什么」，不做入场表演。</span></li>
+          </ul>
+        </div>
+      </div>
+    </div>
+
+    <div class="dir-card" style="margin-top:14px">
+      <div>
+        <div class="dir-k">DESIGN DIRECTION</div>
+        <div class="dir-v">静默工具（Calm Tool）</div>
+        <p>
+          中性灰画布 + 纯白卡片 + 1px 描边 + 10~12px 圆角 + 唯一蓝色强调色。三端（Web 用户端 / 管理端 / exe）
+          共用同一套令牌，只在<b>密度</b>上分叉：Web 行高 44、exe 36、管理端表格 42。
+        </p>
+      </div>
+      <div>
+        <div class="dir-k">WHY NOT 现在的样子</div>
+        <div class="dir-v">不是不好看，是「不像同一套」</div>
+        <p>
+          现状：用户端是表单墙、管理端是表格 + 右栏、exe 是 tkinter 的表格堆叠，三端各说各话；状态只有颜色没有文案；
+          空状态与错误态基本没设计。v2 的目标是<b>同一套语法 + 三种密度</b>，而不是三份皮肤。
+        </p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ 02 ============ -->
+  <section class="spec-sec" id="s2">
+    <h2><span class="num">02</span>色彩</h2>
+    <p>
+      取 logo 的蓝（#2563eb 与图形主色一致）作唯一强调色，取 logo 的青绿（#0d9488 加深版）作成功/健康色。
+      状态色必须同时配 soft 底，绝不拿饱和色铺大面积。
+    </p>
+    <div class="spec-grid c4">
+      <div class="swatch"><div class="sw-chip" style="background:#f6f7f9"></div><div class="sw-meta"><div class="sw-n">画布 bg</div><div class="sw-h">#F6F7F9</div><div class="sw-u">页面底、原型画板</div></div></div>
+      <div class="swatch"><div class="sw-chip" style="background:#ffffff;border-bottom:1px solid #e6e8ec"></div><div class="sw-meta"><div class="sw-n">卡片 surface</div><div class="sw-h">#FFFFFF</div><div class="sw-u">卡片、面板、窗口主体</div></div></div>
+      <div class="swatch"><div class="sw-chip" style="background:#fafbfc"></div><div class="sw-meta"><div class="sw-n">次级 surface-2</div><div class="sw-h">#FAFBFC</div><div class="sw-u">侧栏、表头、日志底</div></div></div>
+      <div class="swatch"><div class="sw-chip" style="background:#f1f3f6"></div><div class="sw-meta"><div class="sw-n">填充 surface-3</div><div class="sw-h">#F1F3F6</div><div class="sw-u">hover 底、segmented 轨道</div></div></div>
+      <div class="swatch"><div class="sw-chip" style="background:#e6e8ec"></div><div class="sw-meta"><div class="sw-n">描边 line</div><div class="sw-h">#E6E8EC</div><div class="sw-u">卡片/表格分隔，1px</div></div></div>
+      <div class="swatch"><div class="sw-chip" style="background:#d8dbe1"></div><div class="sw-meta"><div class="sw-n">控件描边 line-2</div><div class="sw-h">#D8DBE1</div><div class="sw-u">输入框、次级按钮</div></div></div>
+      <div class="swatch"><div class="sw-chip" style="background:#131619"></div><div class="sw-meta"><div class="sw-n">主文本</div><div class="sw-h">#131619</div><div class="sw-u">标题、数值、正文</div></div></div>
+      <div class="swatch"><div class="sw-chip" style="background:#868d97"></div><div class="sw-meta"><div class="sw-n">辅助文本</div><div class="sw-h">#868D97</div><div class="sw-u">说明、占位符、表头</div></div></div>
+      <div class="swatch"><div class="sw-chip" style="background:#2563eb"></div><div class="sw-meta"><div class="sw-n">强调 accent</div><div class="sw-h">#2563EB</div><div class="sw-u">主按钮、当前步骤、链接</div></div></div>
+      <div class="swatch"><div class="sw-chip" style="background:#eff4ff;border-bottom:1px solid #cfdcfb"></div><div class="sw-meta"><div class="sw-n">强调底</div><div class="sw-h">#EFF4FF</div><div class="sw-u">选中行、图标底</div></div></div>
+      <div class="swatch"><div class="sw-chip" style="background:#0d9488"></div><div class="sw-meta"><div class="sw-n">成功 ok</div><div class="sw-h">#0D9488</div><div class="sw-u">签到成功、运行中</div></div></div>
+      <div class="swatch"><div class="sw-chip" style="background:#b45309"></div><div class="sw-meta"><div class="sw-n">需处理 warn</div><div class="sw-h">#B45309</div><div class="sw-u">Cookie 过期、重试中</div></div></div>
+    </div>
+
+    <div class="force-dark" style="margin-top:14px">
+      <div class="row-b" style="margin-bottom:12px">
+        <div class="ct">深色模式（同一套语义，反相后的取值）</div>
+        <span class="pill plain">#101317 画布</span>
+      </div>
+      <div class="spec-grid c4">
+        <div class="swatch"><div class="sw-chip" style="background:#101317"></div><div class="sw-meta"><div class="sw-n">bg</div><div class="sw-h">#101317</div></div></div>
+        <div class="swatch"><div class="sw-chip" style="background:#191d23"></div><div class="sw-meta"><div class="sw-n">surface</div><div class="sw-h">#191D23</div></div></div>
+        <div class="swatch"><div class="sw-chip" style="background:#2b313a"></div><div class="sw-meta"><div class="sw-n">line</div><div class="sw-h">#2B313A</div></div></div>
+        <div class="swatch"><div class="sw-chip" style="background:#5b8cf7"></div><div class="sw-meta"><div class="sw-n">accent</div><div class="sw-h">#5B8CF7</div></div></div>
+        <div class="swatch"><div class="sw-chip" style="background:#34d3bd"></div><div class="sw-meta"><div class="sw-n">ok</div><div class="sw-h">#34D3BD</div></div></div>
+        <div class="swatch"><div class="sw-chip" style="background:#f0b44a"></div><div class="sw-meta"><div class="sw-n">warn</div><div class="sw-h">#F0B44A</div></div></div>
+        <div class="swatch"><div class="sw-chip" style="background:#f08a80"></div><div class="sw-meta"><div class="sw-n">bad</div><div class="sw-h">#F08A80</div></div></div>
+        <div class="swatch"><div class="sw-chip" style="background:#eef1f5"></div><div class="sw-meta"><div class="sw-n">text</div><div class="sw-h">#EEF1F5</div></div></div>
+      </div>
+    </div>
+    <div class="note" style="margin-top:12px">
+      <b>规则：</b>深色下蓝/青都要提亮 2 档并降饱和，否则在 #191D23 上会「发光」。状态 pill 的底色一律用 *-soft + *-line 描边，
+      不使用 15% 透明叠加（深色下会脏）。
+    </div>
+  </section>
+
+  <!-- ============ 03 ============ -->
+  <section class="spec-sec" id="s3">
+    <h2><span class="num">03</span>字体与层级</h2>
+    <p>只用 4 档字重（450 正文 / 550 控件 / 600 标题 / 640 页面标题）。中文 -0.006em，标题 -0.02em，数字一律 tabular-nums。</p>
+    <div class="sbox">
+      <div class="sbd col" style="padding:4px 16px 8px">
+        <div class="type-row"><div class="meta">19 / 640 / -0.02em</div><div class="demo"><span style="font-size:19px;font-weight:640;letter-spacing:-0.02em">扫码登录 教学平台</span></div></div>
+        <div class="type-row"><div class="meta">16 / 620 / -0.02em</div><div class="demo"><span style="font-size:16px;font-weight:620;letter-spacing:-0.02em">张明远 · 2023 级计算机 1 班</span></div></div>
+        <div class="type-row"><div class="meta">13.5 / 600</div><div class="demo"><span style="font-size:13.5px;font-weight:600">签到地点与通知</span></div></div>
+        <div class="type-row"><div class="meta">13.5 / 450</div><div class="demo"><span style="font-size:13.5px">每天 21:31 自动提交签到，失败后按 5 分钟间隔重试 3 次。</span></div></div>
+        <div class="type-row"><div class="meta">12 / 550</div><div class="demo"><span style="font-size:12px;font-weight:550;color:var(--text-2)">纬度 / 经度</span></div></div>
+        <div class="type-row"><div class="meta">11.5 / 450</div><div class="demo"><span style="font-size:11.5px;color:var(--text-3)">支持直接粘贴「39.9087, 116.3975」整段坐标，会自动拆分。</span></div></div>
+        <div class="type-row"><div class="meta">mono 12 / 450</div><div class="demo"><span style="font-family:var(--mono);font-size:12px;letter-spacing:-0.01em">39.908720 &nbsp;116.397450 &nbsp;07:30:00 &nbsp;2000001</span></div></div>
+      </div>
+    </div>
+    <div class="note" style="margin-top:12px">
+      <b>等宽的三个用途：</b>坐标、时间点、会话/Key 片段。数字（签到次数、倒计时、ID）用 tabular-nums 对齐，避免跳动。
+    </div>
+  </section>
+
+  <!-- ============ 04 ============ -->
+  <section class="spec-sec" id="s4">
+    <h2><span class="num">04</span>空间、圆角与控件尺寸</h2>
+    <p>4px 栅格。间距只有 4/6/8/10/12/14/16/18/24；圆角只有 6/8/10/12/14。同一行控件必须等高。</p>
+    <div class="spec-grid c2">
+      <div class="sbox">
+        <div class="shd">圆角层级</div>
+        <div class="sbd">
+          <div style="text-align:center"><div style="width:62px;height:44px;border:1px solid var(--line-2);border-radius:6px;background:var(--surface-3)"></div><div class="hint" style="margin-top:6px">6 小控件</div></div>
+          <div style="text-align:center"><div style="width:62px;height:44px;border:1px solid var(--line-2);border-radius:8px;background:var(--surface-3)"></div><div class="hint" style="margin-top:6px">8 按钮/输入</div></div>
+          <div style="text-align:center"><div style="width:62px;height:44px;border:1px solid var(--line-2);border-radius:10px;background:var(--surface-3)"></div><div class="hint" style="margin-top:6px">10 内层面板</div></div>
+          <div style="text-align:center"><div style="width:62px;height:44px;border:1px solid var(--line-2);border-radius:12px;background:var(--surface-3)"></div><div class="hint" style="margin-top:6px">12 卡片</div></div>
+          <div style="text-align:center"><div style="width:62px;height:44px;border:1px solid var(--line-2);border-radius:14px;background:var(--surface-3)"></div><div class="hint" style="margin-top:6px">14 弹窗</div></div>
+        </div>
+      </div>
+      <div class="sbox">
+        <div class="shd">控件高度（同一行必须等高）</div>
+        <div class="sbd col" style="gap:8px">
+          <div class="row-b"><span class="hint">Web 主按钮 / 输入框</span><span class="chip" style="padding:0 9px">34px</span></div>
+          <div class="row-b"><span class="hint">工具条按钮 / 搜索 / 图标按钮</span><span class="chip" style="padding:0 9px">32px</span></div>
+          <div class="row-b"><span class="hint">exe 全部控件</span><span class="chip" style="padding:0 9px">32px</span></div>
+          <div class="row-b"><span class="hint">小按钮 / chip / pill</span><span class="chip" style="padding:0 9px">28 / 26 / 23</span></div>
+          <div class="row-b"><span class="hint">开关 / 表格行（Web / exe）</span><span class="chip" style="padding:0 9px">34×20 / 44 / 36</span></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ 05 ============ -->
+  <section class="spec-sec" id="s5">
+    <h2><span class="num">05</span>组件</h2>
+    <p>下面是可直接复制的控件形态。所有 hover 都在 120–160ms 内完成，不做位移放大。</p>
+
+    <div class="spec-grid c3" style="margin-bottom:12px">
+      <div class="sbox">
+        <div class="shd">按钮 · 5 态</div>
+        <div class="sbd col">
+          <div class="row"><button class="btn btn-p">保存并启用</button><button class="btn">取消</button></div>
+          <div class="row"><button class="btn btn-p" style="opacity:.55">生成中…</button><button class="btn btn-g">查看日志</button></div>
+          <div class="row"><button class="btn btn-sm">小号</button><button class="btn btn-sm btn-danger">删除任务</button><button class="btn btn-xs">xs</button></div>
+          <div class="row"><button class="btn" aria-disabled="true">不可用</button><button class="btn btn-p" style="box-shadow:0 0 0 3px var(--accent-soft)">聚焦</button></div>
+        </div>
+      </div>
+      <div class="sbox">
+        <div class="shd">输入 · 默认 / 聚焦 / 错误 / 只读</div>
+        <div class="sbd col">
+          <div class="field"><div class="lbl">纬度</div><input class="in mono" value="39.908720" /></div>
+          <div class="field"><div class="lbl">经度</div><input class="in mono" value="116.397450" style="border-color:var(--accent);box-shadow:var(--ring)" /></div>
+          <div class="field"><div class="lbl">执行时间</div><input class="in mono bad" value="25:00:00" /><div class="hint bad">时间格式应为 00:00–23:59</div></div>
+          <div class="field"><div class="lbl">班级（扫码后自动填入）</div><input class="in ro" value="2023 级计算机 1 班" readonly /></div>
+        </div>
+      </div>
+      <div class="sbox">
+        <div class="shd">状态 pill · 圆点 / chip / 开关</div>
+        <div class="sbd col">
+          <div class="row"><span class="pill ok"><i class="d"></i>运行中</span><span class="pill warn"><i class="d"></i>Cookie 过期</span><span class="pill bad"><i class="d"></i>签到失败</span><span class="pill"><i class="d"></i>已暂停</span></div>
+          <div class="row"><span class="chip">07:30:00<i class="x">×</i></span><span class="chip">21:31:00<i class="x">×</i></span><span class="chip add">+ 添加时间</span></div>
+          <div class="row-b"><span class="hint">开机自启</span><button class="sw" aria-checked="true"></button></div>
+          <div class="row-b"><span class="hint">关闭窗口最小化到托盘</span><button class="sw" aria-checked="false"></button></div>
+          <div class="seg"><span aria-selected="true">全部</span><span>异常</span><span>已暂停</span></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="spec-grid c2">
+      <div class="sbox">
+        <div class="shd">步骤条 · 单屏分步（Web 主流程）</div>
+        <div class="sbd col">
+          <div class="steps">
+            <div class="step done"><span class="n">✓</span><div><div class="t">微信扫码登录</div><div class="s">已识别：张明远 · 2000001</div></div></div>
+            <div class="step on"><span class="n">2</span><div><div class="t">地点与执行时间</div><div class="s">与签到记录定位保持一致，可加多个时间点</div></div></div>
+            <div class="step"><span class="n">3</span><div><div class="t">通知与提交</div><div class="s">Server 酱 / Qmsg 酱可选，不填则不推送</div></div></div>
+          </div>
+        </div>
+      </div>
+      <div class="sbox">
+        <div class="shd">日志 · 四级着色</div>
+        <div class="sbd col" style="padding:0">
+          <pre class="log" style="width:100%"><span class="dm">21:31:02</span>  用户与班级：张明远 / 2000001
+<span class="dm">21:31:02</span>  检测到签到项 88213（punchs）
+<span class="dm">21:31:03</span>  <span class="ok">本次签到成功</span> · 定位 39.9088, 116.3974
+<span class="dm">21:36:04</span>  <span class="wn">未签到，5 分钟后第 1 次重试</span>
+<span class="dm">21:41:05</span>  <span class="ok">重试成功</span>
+<span class="dm">22:00:00</span>  <span class="bd">Cookie 失效，需重新扫码</span></pre>
+        </div>
+      </div>
+      <div class="sbox">
+        <div class="shd">空状态 · 新用户 / 无日志 / 加载</div>
+        <div class="sbd col">
+          <div class="empty">
+            <div class="e-ico"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><path d="M14 14h3v3h-3zM19 19h2v2h-2z"/></svg></div>
+            <div class="e-t">还没有登录</div>
+            <div class="e-s">用微信扫一次码，之后每天自动签到</div>
+            <button class="btn btn-sm btn-p" style="margin-top:4px">生成二维码</button>
+          </div>
+          <div style="display:flex;flex-direction:column;gap:7px">
+            <div style="height:10px;width:62%;border-radius:4px;background:var(--surface-3)"></div>
+            <div style="height:10px;width:88%;border-radius:4px;background:var(--surface-3)"></div>
+            <div style="height:10px;width:74%;border-radius:4px;background:var(--surface-3)"></div>
+          </div>
+        </div>
+      </div>
+      <div class="sbox">
+        <div class="shd">反馈 · Toast / 行内提示 / 二次确认</div>
+        <div class="sbd col">
+          <span class="toast"><span class="dot ok"></span>任务已创建，明天 07:30 首次执行</span>
+          <div class="note warn" style="border-radius:6px"><b>Cookie 已过期。</b> 重新扫码后会覆盖旧凭证，历史配置保持不变。</div>
+          <div class="row" style="gap:8px;align-items:center">
+            <span class="hint" style="flex:1">删除后日志一并清除，不可恢复。</span>
+            <button class="btn btn-sm">取消</button>
+            <button class="btn btn-sm" style="background:var(--bad);border-color:transparent;color:#fff">确认删除</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="sbox" style="margin-top:12px">
+      <div class="shd">列表行 · 表格（Web 管理端）</div>
+      <table class="tbl">
+        <thead><tr><th style="width:30%">学生</th><th style="width:20%">执行时间</th><th style="width:16%">状态</th><th style="width:18%">下次执行</th><th></th></tr></thead>
+        <tbody>
+          <tr class="sel">
+            <td><div class="who"><span class="ava">张</span><div><div class="n">张明远</div><div class="c">2000001</div></div></div></td>
+            <td class="mono">07:30 · 21:31</td>
+            <td><span class="pill ok"><i class="d"></i>成功</span></td>
+            <td class="mono">今天 21:31</td>
+            <td style="text-align:right"><button class="btn btn-xs btn-g">详情</button></td>
+          </tr>
+          <tr>
+            <td><div class="who"><span class="ava w">林</span><div><div class="n">林可欣</div><div class="c">2000001</div></div></div></td>
+            <td class="mono">21:31</td>
+            <td><span class="pill warn"><i class="d"></i>需重新登录</span></td>
+            <td class="mono">今天 21:31</td>
+            <td style="text-align:right"><button class="btn btn-xs btn-g">详情</button></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- ============ 06 ============ -->
+  <section class="spec-sec" id="s6">
+    <h2><span class="num">06</span>状态语义</h2>
+    <p>现在只有「绿/灰两态」。v2 定四个状态，每个状态都有颜色、圆点、文案，三端措辞必须完全一致。</p>
+    <div class="sbox">
+      <table class="tbl-spec">
+        <thead><tr><th style="width:120px">状态</th><th style="width:150px">形态</th><th style="width:90px">色值</th><th>出现位置与文案</th></tr></thead>
+        <tbody>
+          <tr><td><span class="pill ok"><i class="d"></i>运行中</span></td><td>实心点 + 文案</td><td class="mono">#0D9488</td><td>exe 状态栏 / 账号行；表示调度器在线且该账号启用中。侧栏极窄时退化为纯圆点。</td></tr>
+          <tr><td><span class="pill warn"><i class="d"></i>需重新登录</span></td><td>实心点 + 文案</td><td class="mono">#B45309</td><td>Cookie 失效。主操作由「立即签到」变为「重新扫码」，行内给出一次性说明。</td></tr>
+          <tr><td><span class="pill bad"><i class="d"></i>签到失败</span></td><td>实心点 + 文案</td><td class="mono">#B42318</td><td>签到接口返回错误或网络异常且重试耗尽。必须同时给「查看日志」入口。</td></tr>
+          <tr><td><span class="pill"><i class="d"></i>已暂停</span></td><td>实心点 + 文案</td><td class="mono">#868D97</td><td>用户手动停用。灰不是错误，不出现红黄色。</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="note warn" style="margin-top:12px">
+      <b>禁止：</b>只给一个圆点、没有任何语义的空胶囊；用红色表达「暂停」；用绿色表达「已启用但今天没签上」。
+    </div>
+  </section>
+
+  <!-- ============ 07 ============ -->
+  <section class="spec-sec" id="s7">
+    <h2><span class="num">07</span>品牌标识</h2>
+    <p>沿用现有 <code style="font-family:var(--mono);font-size:12px">logo.png</code>（512 / 256 透明底），不重绘、不改色、不加圆角与投影。</p>
+    <div class="sbox">
+      <div class="sbd" style="gap:18px">
+        <div class="logo-row">
+          <figure><div class="logo-pad" style="width:44px;height:44px"><img src="assets/logo.png" width="20" height="20" alt="" /></div><figcaption>20 侧栏</figcaption></figure>
+          <figure><div class="logo-pad" style="width:52px;height:52px"><img src="assets/logo.png" width="26" height="26" alt="" /></div><figcaption>26 顶栏</figcaption></figure>
+          <figure><div class="logo-pad" style="width:58px;height:58px"><img src="assets/logo.png" width="30" height="30" alt="" /></div><figcaption>30 exe</figcaption></figure>
+          <figure><div class="logo-pad" style="width:68px;height:68px"><img src="assets/logo.png" width="40" height="40" alt="" /></div><figcaption>40 弹窗/关于</figcaption></figure>
+          <figure><div class="logo-pad" style="width:96px;height:96px"><img src="assets/logo.png" width="64" height="64" alt="" /></div><figcaption>64 引导页</figcaption></figure>
+        </div>
+        <div style="flex:1;min-width:210px">
+          <ul class="rule-list">
+            <li><span class="mk y">取</span><span>透明底直接贴合，浅色深色都不垫白板。</span></li>
+            <li><span class="mk y">取</span><span>图标与 logo 同源：exe / 托盘 / 任务栏用同一张 PNG 生成 ico。</span></li>
+            <li><span class="mk n">弃</span><span>拉伸变形、描边、外发光、在深色底上再垫白底。</span></li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ 08 ============ -->
+  <section class="spec-sec" id="s8">
+    <h2><span class="num">08</span>三端密度映射</h2>
+    <p>同一套令牌，只有密度和容器不同 —— 这是「三端一致」的可执行定义。</p>
+    <div class="density">
+      <div class="dbox">
+        <div class="dh">Web 用户端 <span>--fs 13.5 / --ctl 34</span></div>
+        <div class="db">
+          <div class="card"><div class="cb" style="gap:9px">
+            <div class="lbl">纬度 / 经度</div>
+            <input class="in mono" value="39.908720  116.397450" />
+            <button class="btn btn-p">保存并启用</button>
+          </div></div>
+          <div class="hint">单列 560 ~ 1120 容器；卡片间距 16；行高 44。</div>
+        </div>
+      </div>
+      <div class="dbox">
+        <div class="dh">管理端 <span>--fs 13 / --ctl 32</span></div>
+        <div class="db">
+          <div class="row" style="gap:6px;flex-wrap:wrap">
+            <button class="btn btn-sm" style="height:28px">刷新</button>
+            <button class="btn btn-sm btn-p" style="height:28px">新建</button>
+            <span class="pill ok"><i class="d"></i>24 启用</span>
+          </div>
+          <div class="hint">侧栏 224；工具条 32；表格行 42；详情抽屉 336。</div>
+        </div>
+      </div>
+      <div class="dbox">
+        <div class="dh">exe 桌面端 <span>--fs 13 / --ctl 32</span></div>
+        <div class="db">
+          <div class="row" style="gap:6px">
+            <button class="btn btn-sm" style="height:28px">暂停</button>
+            <button class="btn btn-sm btn-p" style="height:28px">立即签到</button>
+          </div>
+          <div class="hint">窗口标题栏 36；侧栏 264；账号行 46；状态栏 38。</div>
+        </div>
+      </div>
+    </div>
+    <div class="sbox" style="margin-top:12px">
+      <table class="tbl-spec">
+        <thead><tr><th>元素</th><th>Web 用户端</th><th>管理端</th><th>exe</th></tr></thead>
+        <tbody>
+          <tr><td>顶栏</td><td>56，品牌 + 状态 + 管理端入口</td><td>56（外壳内另加侧栏）</td><td>36 自绘标题栏（dbx 式）+ 46×36 全高窗口按钮</td></tr>
+          <tr><td>导航</td><td>无（单任务单页）</td><td>左侧 224 侧栏</td><td>左侧 264 账号列表</td></tr>
+          <tr><td>主操作</td><td>保存并启用</td><td>新建任务 / 保存修改</td><td>立即签到（保存自动）</td></tr>
+          <tr><td>结果呈现</td><td>卡片内行列表 + 提交成功页</td><td>表格 + 右侧详情抽屉</td><td>面板内等宽日志 + 底部状态栏</td></tr>
+          <tr><td>浮层</td><td>居中弹窗 400，圆角 14</td><td>同左</td><td>窗口内模态 420，圆角 14（Tauri 下可 1:1 还原）</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="spec-grid c3" style="margin-top:12px">
+      <div class="sbox">
+        <div class="shd">10-exe.html</div>
+        <div class="sbd col" style="gap:4px">
+          <div class="hint">Rust + Tauri 目标形态 · 6 屏 + 托盘</div>
+          <div class="hint" style="color:var(--text-2)">主界面（正常 / 需重新登录）、添加账号、设置 ×2、首次运行、托盘菜单</div>
+        </div>
+      </div>
+      <div class="sbox">
+        <div class="shd">20-web-user.html</div>
+        <div class="sbd col" style="gap:4px">
+          <div class="hint">组件契约级 · 3 屏</div>
+          <div class="hint" style="color:var(--text-2)">扫码登录、地点与时间、通知与提交。只锁字段与文案，不铺状态</div>
+        </div>
+      </div>
+      <div class="sbox">
+        <div class="shd">30-web-admin.html</div>
+        <div class="sbd col" style="gap:4px">
+          <div class="hint">组件契约级 · 3 屏</div>
+          <div class="hint" style="color:var(--text-2)">管理员鉴权、任务台（列表 + 抽屉）、批量操作</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="spec-grid c2" style="margin-top:12px">
+      <div class="sbox">
+        <div class="shd">桌面端窗口：自绘标题栏（参考 dbx）</div>
+        <table class="tbl-spec">
+          <tbody>
+            <tr><td style="width:118px">标题栏高度</td><td>36px（含 1px 下边框），比 Web 顶栏矮一档</td></tr>
+            <tr><td>系统边框</td><td>去掉，由应用自绘；窗口 12px 圆角 + <span class="mono">--sh-pop</span> 投影</td></tr>
+            <tr><td>拖拽区</td><td>整条标题栏可拖；pill 与按钮设 <span class="mono">no-drag</span>，双击最大化 / 还原</td></tr>
+            <tr><td>窗口按钮</td><td>46 × 36 直角块，右贴边；hover 用 <span class="mono">surface-3</span>，关闭 hover <span class="mono">#C42B1C</span> + 白字</td></tr>
+            <tr><td>标题区</td><td>16px logo + 名称 12/600 + 状态 pill（20px 高），三者间距 8</td></tr>
+            <tr><td>不可做</td><td>不加系统菜单栏、不加第二行工具条 —— dbx 的紧凑感来自「只有一行」</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="sbox">
+        <div class="shd">失败重试：从「写死」改成「可配」</div>
+        <div class="sbd col" style="gap:10px">
+          <div class="row" style="gap:7px;align-items:center">
+            <span class="lbl">失败重试</span>
+            <input class="in" style="width:52px;height:28px;text-align:center;padding:0" value="3" />
+            <span class="lbl">次，间隔</span>
+            <input class="in" style="width:52px;height:28px;text-align:center;padding:0" value="5" />
+            <span class="lbl">分钟</span>
+          </div>
+          <div class="hint">三端同一组数字输入（不是 select），校验区间固定：次数 1–10，间隔 1–60 分钟；默认 3 / 5。</div>
+          <div class="hint">放在「每天执行时间」同一张卡里，因为重试只对该任务的时间点生效，不放在全局设置。</div>
+          <div class="note" style="padding:8px 11px">
+            这个改动让 <b>retry_count / retry_interval 必须入库</b>，不能再读常量，否则重启就丢。
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ 09 ============ -->
+  <section class="spec-sec" id="s9">
+    <h2><span class="num">09</span>三端功能对等矩阵</h2>
+    <p>
+      「三端一致」不是把界面画得一样，而是<b>同一个能力在三个端上叫同一个名字、用同一个控件、走同一套校验</b>。
+      下表是硬约束：标 ✓ 的必须同名同形；标「平台专属」的只在一个端出现，且不得反向污染其他端。
+    </p>
+
+    <div class="sbox" style="overflow:hidden">
+      <table class="mx">
+        <thead>
+          <tr>
+            <th style="width:26%">能力</th>
+            <th style="width:13%">桌面端 exe</th>
+            <th style="width:15%">Web 用户端</th>
+            <th style="width:15%">Web 管理端</th>
+            <th>说明 / 差异</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr><td>扫码添加 / 更新账号</td><td class="yes">✓</td><td class="yes">✓</td><td class="no">—</td><td>管理端<b>不代扫</b>，无 Cookie 编辑入口</td></tr>
+          <tr><td>姓名 / 班级展示</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td><td>同一格式：姓名 + 班级（副行等宽 ID）</td></tr>
+          <tr><td>纬度 / 经度 / 精度</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td><td>精度三档：30 / 50 / 100 米</td></tr>
+          <tr><td>坐标拾取</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td><td>统一为「定位图标 + 拾取」，三端同一个 SVG</td></tr>
+          <tr><td>多时间点增删</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td><td>chip 格式统一 HH:MM:SS</td></tr>
+          <tr><td>失败重试（次数 / 间隔）</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td><td>用户可自行设置：1–10 次 · 1–60 分钟，默认 3 次 / 5 分钟</td></tr>
+          <tr><td>微信通知 · Server 酱</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td><td>开关 + 掩码输入，空值自动关</td></tr>
+          <tr><td>QQ 通知 · Qmsg 酱</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td><td>同上，与微信二选一即可</td></tr>
+          <tr><td>启用 / 暂停</td><td class="yes">✓</td><td class="warn">⚠</td><td class="yes">✓</td><td>用户端缺接口，见下方清单</td></tr>
+          <tr><td>立即签到</td><td class="yes">✓</td><td class="warn">⚠</td><td class="no">—</td><td>用户端缺接口；管理端不代跑</td></tr>
+          <tr><td>查看日志</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td><td>同一套四级着色（info/成功/重试/失败）</td></tr>
+          <tr><td>日志复制 / 清空 / 打开目录</td><td class="yes">✓</td><td class="warn">部分</td><td class="yes">✓</td><td>浏览器无「打开目录」，其余一致</td></tr>
+          <tr><td>删除任务（二次确认）</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td><td>确认文案必须写明「日志一并清除」</td></tr>
+          <tr><td>明暗主题</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td><td>三端同一套令牌，跟随系统为默认</td></tr>
+          <tr><td>服务 / 调度状态</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td><td>桌面端显示「后台运行中」，Web 显示「服务正常」</td></tr>
+          <tr><td>开机自启</td><td class="yes">✓</td><td class="no">—</td><td class="no">—</td><td><span class="cap">平台专属</span></td></tr>
+          <tr><td>托盘 / 关窗行为 / 单实例</td><td class="yes">✓</td><td class="no">—</td><td class="no">—</td><td><span class="cap">平台专属</span></td></tr>
+          <tr><td>自动更新</td><td class="yes">✓</td><td class="no">—</td><td class="no">—</td><td><span class="cap">平台专属</span></td></tr>
+          <tr><td>批量操作</td><td class="no">—</td><td class="no">—</td><td class="yes">✓</td><td><span class="cap">平台专属：启用 / 暂停 / 改时间 / 删除</span></td></tr>
+          <tr><td>管理员鉴权</td><td class="no">—</td><td class="no">—</td><td class="yes">✓</td><td><span class="cap">平台专属：本机初始化或 ADMIN_KEY</span></td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="spec-grid c2" style="margin-top:14px">
+      <div class="sbox">
+        <div class="shd">接口对齐清单（做 UI 之前要先补的后端）</div>
+        <div class="sbd col" style="gap:10px">
+          <div class="alert warn" style="padding:9px 11px">
+            <div>
+              <b>1. 立即签到</b><br />
+              <span class="mono" style="font-family:var(--mono);font-size:11px">POST /api/tasks/{id}/run</span><br />
+              用户端 <code style="font-family:var(--mono);font-size:11px">POST /api/tasks</code> 只创建任务，没有「跑一次」。不补这个接口，用户端的「立即签到」就是假按钮。
+            </div>
+          </div>
+          <div class="alert warn" style="padding:9px 11px">
+            <div>
+              <b>2. 启用 / 暂停</b><br />
+              <span class="mono" style="font-family:var(--mono);font-size:11px">PATCH /api/tasks/{id} → enabled</span><br />
+              目前只有管理端 PATCH，用户端没有自己的编辑入口。
+            </div>
+          </div>
+          <div class="alert warn" style="padding:9px 11px">
+            <div>
+              <b>3. 重试策略入库</b><br />
+              <span class="mono" style="font-family:var(--mono);font-size:11px">retry_count / retry_interval</span><br />
+              已定为<b>用户可编辑</b>，所以必须入库（默认 3 次 / 5 分钟）。三端共用同一校验：次数 1–10、间隔 1–60 分钟。
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="sbox">
+        <div class="shd">文案冻结表（三端逐字一致）</div>
+        <div class="sbd col" style="gap:0">
+          <table class="tbl-spec">
+            <tbody>
+              <tr><td style="width:110px">状态</td><td>运行中 / 需重新登录 / 签到失败 / 已暂停</td></tr>
+              <tr><td>主操作</td><td>立即签到 · 暂停 · 恢复 · 重新扫码 · 保存</td></tr>
+              <tr><td>字段</td><td>纬度 · 经度 · 精度 · 每天执行时间 · 失败重试</td></tr>
+              <tr><td>通知</td><td>微信通知 · Server 酱 / QQ 通知 · Qmsg 酱</td></tr>
+              <tr><td>日志动作</td><td>复制 · 清空 · 打开目录</td></tr>
+              <tr><td>危险操作</td><td>删除账号 · 删除任务（日志一并清除）</td></tr>
+            </tbody>
+          </table>
+          <div class="hint" style="padding:10px 12px 2px">允许的差异只有一处：Web 首次创建主按钮为「保存并启用」，之后为「保存」；桌面端账号创建即启用，按钮恒为「保存」。</div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ 10 ============ -->
+  <section class="spec-sec" id="s10">
+    <h2><span class="num">10</span>动效与可访问性</h2>
+    <div class="spec-grid c2">
+      <div class="sbox">
+        <div class="shd">动效</div>
+        <div class="sbd col">
+          <ul class="rule-list">
+            <li><span class="mk y">取</span><span><b>140ms / ease-out</b>：hover、按钮按下、开关滑动。</span></li>
+            <li><span class="mk y">取</span><span><b>180ms / ease</b>：步骤切换、抽屉滑入、弹窗淡入 + 上移 4px。</span></li>
+            <li><span class="mk y">取</span><span><b>进度条与倒计时用 1s 线性</b>，因为它在表达真实时间。</span></li>
+            <li><span class="mk n">弃</span><span>首屏入场动画、卡片依次浮起、数字滚动 —— 每天开一次的工具，第三次就烦。</span></li>
+          </ul>
+        </div>
+      </div>
+      <div class="sbox">
+        <div class="shd">可访问性底线（WCAG 2.2 AA）</div>
+        <div class="sbd col">
+          <ul class="rule-list">
+            <li><span class="mk y">•</span><span>正文对比度 ≥ 4.5:1（#545A63 on #FFF = 7.4:1）；辅助文字 ≥ 3:1。</span></li>
+            <li><span class="mk y">•</span><span>焦点环统一 3px 半透明蓝，键盘 Tab 顺序 = 视觉顺序。</span></li>
+            <li><span class="mk y">•</span><span>状态不只靠颜色：色 + 圆点 + 文案三重编码。</span></li>
+            <li><span class="mk y">•</span><span>所有图标按钮有 aria-label；Cookie / Key 默认掩码，可点击显示。</span></li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ 11 ============ -->
+  <section class="spec-sec" id="s11">
+    <h2><span class="num">11</span>决策记录</h2>
+    <p>以下已定稿，后续实现按这张表验收；改任何一条都要同步改三端与本文档。</p>
+
+    <div class="sbox" style="overflow:hidden">
+      <table class="tbl-spec">
+        <thead>
+          <tr><th style="width:24%">决策</th><th style="width:45%">结论</th><th>影响 / 落实点</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>桌面端技术路线</td>
+            <td><b>Rust + Tauri 重写</b>，不再为 tkinter 做降级</td>
+            <td>窗口可 1:1 还原圆角、投影、36px 自绘标题栏；tkinter 版作为过渡保留</td>
+          </tr>
+          <tr>
+            <td>标题栏</td>
+            <td><b>自绘，36px</b>，参考 dbx</td>
+            <td>窗口按钮 46×36 贴右，关闭悬停 #C42B1C；可拖拽、双击最大化</td>
+          </tr>
+          <tr>
+            <td>关窗行为</td>
+            <td><b>默认最小化到托盘</b>，首次关闭给一次性说明</td>
+            <td>设置页可改「直接退出」；真正退出走托盘菜单</td>
+          </tr>
+          <tr>
+            <td>坐标拾取</td>
+            <td><b>定位图标 + 「拾取」</b>，三端同一个 SVG</td>
+            <td>沿用旧原型里的 pin 图标；管理端抽屉也要有</td>
+          </tr>
+          <tr>
+            <td>失败重试</td>
+            <td><b>用户可设置</b>：1–10 次 / 1–60 分钟，默认 3 次 / 5 分钟</td>
+            <td>数字输入，放在「每天执行时间」卡内；<b>需入库</b> retry_count / retry_interval</td>
+          </tr>
+          <tr>
+            <td>管理端范围</td>
+            <td><b>到此为止</b>：列表 + 详情抽屉 + 批量启停 / 批量改时间</td>
+            <td>不做按班级分组、7 天成功率、操作审计</td>
+          </tr>
+          <tr>
+            <td>移动端</td>
+            <td><b>不做</b>。没有 APK、没有 IPA、也没有小程序</td>
+            <td>Web 只在 &lt;680px 时做基础单列堆叠（避免打开就错位），不作为设计目标、不出移动端画板</td>
+          </tr>
+          <tr>
+            <td>Web 两端范围</td>
+            <td><b>契约级 3 屏</b>：只锁字段、控件与文案，不铺状态页</td>
+            <td>等 Rust 桌面端定稿后再回头补 Web 的完整状态</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="note" style="margin-top:14px">
+      <b>下一步：</b>设计侧到此收口，剩下的状态（离线、加载、校验失败、Cookie 过期、删除确认）在实现时按本文档的
+      <a href="#s6" style="color:var(--accent)">状态语义</a>与<a href="#s5" style="color:var(--accent)">组件</a>直接落地，不再单独出图。
+      先改 <span class="mono" style="font-family:var(--mono);font-size:11.5px">web_signin</span>（tokens → 用户端 → 管理端），再按同一套令牌起 Rust 版界面。
+    </div>
+  </section>
+</div>
+
+<script>
+  const themeBtn = document.getElementById('themeBtn');
+  themeBtn.addEventListener('click', () => {
+    const dark = document.documentElement.dataset.theme === 'dark';
+    document.documentElement.dataset.theme = dark ? 'light' : 'dark';
+    themeBtn.textContent = dark ? '切换深色' : '切换浅色';
+  });
+</script>
+</body>
+</html>
