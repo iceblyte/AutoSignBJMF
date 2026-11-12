@@ -57,3 +57,14 @@ node_modules/
 /build/work/
 /build/*.spec
 selfcheck.txt
+
+## Rust 编译产物（workspace 与独立 spike 各有一份 target）
+/rust/target/
+/rust/*/target/
+/spike/*/target/
+
+## 原型校验工具留下的截图/快照
+.playwright-mcp/
+
+## 构建工具（fxc.exe 属于微软 SDK，不再分发；SDK layout 体积很大）
+/rust/_tools/

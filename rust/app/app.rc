@@ -1,0 +1,27 @@
+1 ICON "assets\\app.ico"
+
+1 VERSIONINFO
+FILEVERSION 0,1,0,0
+PRODUCTVERSION 0,1,0,0
+FILEOS 0x40004
+FILETYPE 0x1
+{
+  BLOCK "StringFileInfo"
+  {
+    BLOCK "080404B0"
+    {
+      VALUE "CompanyName", "AutoSignBJMF"
+      VALUE "FileDescription", "班级魔方自动签到"
+      VALUE "FileVersion", "0.1.0"
+      VALUE "InternalName", "AutoSignBJMF"
+      VALUE "OriginalFilename", "AutoSignBJMF.exe"
+      VALUE "ProductName", "班级魔方自动签到"
+      VALUE "ProductVersion", "0.1.0"
+      VALUE "LegalCopyright", "MIT License"
+    }
+  }
+  BLOCK "VarFileInfo"
+  {
+    VALUE "Translation", 0x804, 1200
+  }
+}

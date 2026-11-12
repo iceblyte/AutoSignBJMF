@@ -1,0 +1,8 @@
+{
+  "times": ["07:30:00", "21:31:00"],
+  "retry_attempts": 3,
+  "retry_delay_minutes": 5,
+  "autostart": true,
+  "minimize_to_tray": true,
+  "acc": "30"
+}

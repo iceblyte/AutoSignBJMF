@@ -1,0 +1,18 @@
+[package]
+name = "bjmf-core"
+description = "班级魔方自动签到：配置、时间点与签到流程（无 UI，可单测）"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
+regex.workspace = true
+scraper.workspace = true
+thiserror.workspace = true
+reqwest.workspace = true
+
+[dev-dependencies]
+httpmock.workspace = true

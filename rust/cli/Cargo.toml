@@ -1,0 +1,14 @@
+[package]
+name = "bjmf-cli"
+description = "命令行入口：与 Python 版对拍（--plan / --once）"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "bjmf-rs"
+path = "src/main.rs"
+
+[dependencies]
+bjmf-core = { path = "../core" }
+chrono.workspace = true
