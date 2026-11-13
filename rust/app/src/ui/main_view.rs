@@ -363,6 +363,12 @@ impl AppView {
         cx.notify();
     }
 
+    /// 立即签到（按钮与 Ctrl+Enter 共用）。
+    pub fn run_now(&mut self) {
+        self.runtime.request_run_now();
+        self.state.log(LogKind::Info, "已请求立即签到");
+    }
+
     /// 把当前日志复制到剪贴板（Win32 Unicode，中文不会乱码）。
     pub fn copy_logs(&mut self) {
         let text = self
@@ -786,6 +792,11 @@ impl AppView {
                                 crate::system::autostart::set_enabled(
                                     this.state.settings.autostart,
                                 );
+                                // 和设置页保持一致：改完就落盘，否则重启又变回去
+                                let _ = this
+                                    .state
+                                    .settings
+                                    .save(this.state.paths.settings_file());
                                 cx.notify();
                             }))
                             .child(switch(autostart, false, p)),
@@ -806,6 +817,10 @@ impl AppView {
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.state.settings.minimize_to_tray =
                                     !this.state.settings.minimize_to_tray;
+                                let _ = this
+                                    .state
+                                    .settings
+                                    .save(this.state.paths.settings_file());
                                 cx.notify();
                             }))
                             .child(switch(minimize, false, p)),
@@ -951,7 +966,7 @@ impl AppView {
                         .id("run-now")
                         .cursor_pointer()
                         .on_click(cx.listener(|this, _, _, cx| {
-                            this.runtime.request_run_now();
+                            this.run_now();
                             cx.notify();
                         })),
                 )
@@ -2019,6 +2034,13 @@ impl Render for AppView {
             .bg(rgb(p.desk))
             .text_size(px(13.0))
             .text_color(rgb(p.text))
+            // 状态栏写着 Ctrl+Enter 立即签到，这里把它真正接上
+            .on_key_down(cx.listener(|this, event: &KeyDownEvent, _window, cx| {
+                if event.keystroke.modifiers.control && event.keystroke.key == "enter" {
+                    this.run_now();
+                    cx.notify();
+                }
+            }))
             .child(self.render_titlebar(p))
             .child(
                 div()
