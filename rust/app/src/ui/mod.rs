@@ -1,6 +1,5 @@
 //! 界面模块。
 
-pub mod close_hint;
 pub mod main_view;
 pub mod qr_modal;
 pub mod settings;

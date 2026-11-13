@@ -127,6 +127,8 @@ pub struct AppView {
     pub dropdown_at: Option<(OpenSelect, Pixels, Pixels)>,
     /// 日志区的滚动位置（日志多了要能翻）
     pub log_scroll: ScrollHandle,
+    /// 是否已经做过一次「首次贴底」（首帧布局没完成时滚不动）
+    pub log_pinned: bool,
     focus: Vec<FocusHandle>,
     /// 关窗提示勾了「不再提示」
     pub close_hint_muted: bool,
@@ -307,6 +309,7 @@ impl AppView {
             dropdown_at: None,
             settings_window: None,
             log_scroll: ScrollHandle::new(),
+            log_pinned: false,
             focus,
             close_hint_muted: false,
             close_signal: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
@@ -374,7 +377,8 @@ impl AppView {
                 self.overlay = Overlay::None;
             }
             TrayCommand::Settings => {
-                crate::system::win::show_window(window);
+                // 只弹设置页：主窗口该藏着就继续藏着（window 参数这里用不上了）
+                let _ = window;
                 self.open_settings(cx);
             }
             TrayCommand::RunNow => {
@@ -443,8 +447,9 @@ impl AppView {
         for (kind, line) in self.runtime.drain() {
             self.state.log(kind, line);
         }
-        if self.state.logs.len() != before {
-            // 有新日志就跟着滚到底，不然用户得自己往下翻
+        if self.state.logs.len() != before || !self.log_pinned {
+            // 有新日志就跟着滚到底；第一次 tick 再补滚一次（首帧布局还没完成时滚不动）
+            self.log_pinned = true;
             self.log_scroll.scroll_to_bottom();
         }
         if matches!(self.overlay, Overlay::Qr) {
@@ -459,10 +464,7 @@ impl AppView {
                 // 直接拿这个窗口的 HWND，不再靠枚举（不会认错窗口）
                 crate::system::win::hide_window(window);
                 self.state.log(LogKind::Info, "窗口已隐藏到托盘，签到继续在后台运行");
-                // 提示必须开独立窗口：主窗口这时候已经隐藏，画在里面等于没提示
-                if !crate::ui::close_hint::is_muted() {
-                    crate::ui::close_hint::open(cx, self.dark);
-                }
+                // 关闭就是安静地收到托盘：已经有托盘图标和日志，不再弹提示窗
             } else {
                 std::process::exit(0);
             }
@@ -1113,9 +1115,7 @@ impl AppView {
     }
 
     fn render_sidebar_footer(&self, p: &Palette, cx: &mut Context<Self>) -> AnyElement {
-        let autostart = self.state.settings.autostart;
-        let minimize = self.state.settings.minimize_to_tray;
-
+        // 开机自启 / 关窗行为只放在设置页，侧栏保持干净
         div()
             .border_t_1()
             .border_color(rgb(p.line))
@@ -1124,57 +1124,6 @@ impl AppView {
             .flex()
             .flex_col()
             .gap(px(7.0))
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .text_size(px(11.5))
-                    .text_color(rgb(p.text_2))
-                    .child("开机自启")
-                    .child(
-                        div()
-                            .id("toggle-autostart")
-                            .cursor_pointer()
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.state.settings.autostart = !this.state.settings.autostart;
-                                crate::system::autostart::set_enabled(
-                                    this.state.settings.autostart,
-                                );
-                                // 和设置页保持一致：改完就落盘，否则重启又变回去
-                                let _ = this
-                                    .state
-                                    .settings
-                                    .save(this.state.paths.settings_file());
-                                cx.notify();
-                            }))
-                            .child(switch(autostart, false, p)),
-                    ),
-            )
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .text_size(px(11.5))
-                    .text_color(rgb(p.text_2))
-                    .child("关窗最小化到托盘")
-                    .child(
-                        div()
-                            .id("toggle-minimize")
-                            .cursor_pointer()
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.state.settings.minimize_to_tray =
-                                    !this.state.settings.minimize_to_tray;
-                                let _ = this
-                                    .state
-                                    .settings
-                                    .save(this.state.paths.settings_file());
-                                cx.notify();
-                            }))
-                            .child(switch(minimize, false, p)),
-                    ),
-            )
             // 一键暂停 / 恢复全部账号
             .child(
                 div()
@@ -2205,7 +2154,14 @@ fn window_button(kind: WindowButton, p: &Palette, cx: &mut Context<AppView>) -> 
         })
         .on_click(cx.listener(move |this, _, window, cx| match kind {
             WindowButton::Min => window.minimize_window(),
-            WindowButton::Max => window.zoom_window(),
+            WindowButton::Max => {
+                if window.is_maximized() {
+                    // gpui 的 zoom 在 Windows 上只会放大，缩小得自己调 SW_RESTORE
+                    crate::system::win::restore_window(window);
+                } else {
+                    window.zoom_window();
+                }
+            }
             WindowButton::Close => {
                 // 关闭 = 交给原来的「最小化到托盘」流程，别直接销毁窗口
                 this.close_signal

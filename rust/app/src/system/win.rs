@@ -196,6 +196,14 @@ pub fn show_window(window: &gpui_kit::Window) -> bool {
     }
 }
 
+/// 还原最大化 / 最小化的窗口。
+pub fn restore_window(window: &gpui_kit::Window) -> bool {
+    match window_hwnd_of(window) {
+        Some(hwnd) => unsafe { ShowWindow(hwnd, SW_RESTORE) != 0 },
+        None => false,
+    }
+}
+
 /// 主窗口句柄缓存。
 ///
 /// 关键点：窗口被 `SW_HIDE` 之后 `IsWindowVisible` 为假、枚举不到，
