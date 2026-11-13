@@ -28,12 +28,30 @@ pub struct Student {
     pub qmsg_key: String,
     #[serde(rename = "WXKey")]
     pub wx_key: String,
+    /// 通知渠道是否启用。
+    ///
+    /// 旧配置没有这个字段（`None`），此时按「Key 是否为空」推断，行为和以前一致；
+    /// 用户点过开关之后才会写进 `data.json`。关掉渠道不会删除 Key。
+    #[serde(rename = "WXNoticeOn", skip_serializing_if = "Option::is_none")]
+    pub wx_on: Option<bool>,
+    #[serde(rename = "QmsgNoticeOn", skip_serializing_if = "Option::is_none")]
+    pub qq_on: Option<bool>,
     /// 未识别的字段原样保留，避免写回时把用户手写的内容吃掉。
     #[serde(flatten)]
     pub extra: BTreeMap<String, serde_json::Value>,
 }
 
 impl Student {
+    /// 微信通知是否启用。
+    pub fn wx_enabled(&self) -> bool {
+        self.wx_on.unwrap_or_else(|| !self.wx_key.trim().is_empty())
+    }
+
+    /// QQ 通知是否启用。
+    pub fn qq_enabled(&self) -> bool {
+        self.qq_on.unwrap_or_else(|| !self.qmsg_key.trim().is_empty())
+    }
+
     /// 剩余信息是否完整到可以签到：有 Cookie、有坐标。
     pub fn is_ready(&self) -> bool {
         !self.cookie.trim().is_empty()
@@ -162,6 +180,31 @@ mod tests {
         fs::create_dir_all(&dir).unwrap();
         fs::write(&p, "   ").unwrap();
         assert!(Config::load(&p).unwrap().students.is_empty());
+    }
+
+    #[test]
+    fn 通知开关缺省时按_key_是否为空推断() {
+        // 旧配置没有 WXNoticeOn 字段
+        let with_key: Student = serde_json::from_str(r#"{"name":"A","WXKey":"k"}"#).unwrap();
+        assert!(with_key.wx_enabled(), "有 Key 且没开关字段时视为开启");
+
+        let without: Student = serde_json::from_str(r#"{"name":"A"}"#).unwrap();
+        assert!(!without.wx_enabled(), "没 Key 时视为关闭");
+        assert!(!without.qq_enabled());
+    }
+
+    #[test]
+    fn 关掉渠道不会丢掉_key() {
+        let mut student: Student =
+            serde_json::from_str(r#"{"name":"A","WXKey":"secret","QmsgKEY":"q"}"#).unwrap();
+        student.wx_on = Some(false);
+
+        let text = serde_json::to_string(&student).unwrap();
+        let back: Student = serde_json::from_str(&text).unwrap();
+
+        assert_eq!(back.wx_key, "secret", "关闭渠道不能删 Key");
+        assert!(!back.wx_enabled(), "关闭状态要能读回来");
+        assert!(back.qq_enabled(), "另一个渠道不受影响");
     }
 
     #[test]

@@ -51,6 +51,10 @@ pub fn pill(text: impl Into<SharedString>, fg: u32, bg: u32, border: u32, with_d
 }
 
 /// 开关 `.sw`：34×20，选中时强调色，小圆点 16。
+/// 开关：开启是强调色轨道 + 白点内对勾，关闭是灰轨道 + 白点内叉。
+///
+/// 参考 ElegantClipboard 的开关形态 —— 带符号比纯色块更容易一眼看出当前状态，
+/// 对「不想点开设置页确认」的场景尤其明显。
 pub fn switch(checked: bool, disabled: bool, p: &Palette) -> Div {
     let track = if checked { p.accent } else { p.line_2 };
     let knob_left = if checked { 34.0 - 2.0 - 16.0 } else { 2.0 };
@@ -69,7 +73,14 @@ pub fn switch(checked: bool, disabled: bool, p: &Palette) -> Div {
                 .w(px(16.0))
                 .h(px(16.0))
                 .rounded_full()
-                .bg(rgb(0xffffff)),
+                .bg(rgb(0xffffff))
+                .flex()
+                .items_center()
+                .justify_center()
+                .text_size(px(10.0))
+                .text_color(rgb(if checked { p.accent } else { p.text_3 }))
+                // 用 ✓ 与 ×：这两个字符在中文字体里都有，不会出现豆腐块
+                .child(if checked { "✓" } else { "×" }),
         )
 }
 

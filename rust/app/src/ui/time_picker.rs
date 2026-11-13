@@ -9,7 +9,7 @@ use gpui_kit::prelude::*;
 use gpui_kit::{div, px, rgba, rgb, AnyElement, Context, SharedString};
 
 use crate::theme::*;
-use crate::ui::main_view::{AppView, OpenSelect, Overlay};
+use crate::ui::main_view::{dropdown_list, AppView, OpenSelect, Overlay};
 use crate::ui::widgets::{button, choice_chip, BtnKind, BtnSize};
 
 const PANEL_W: f32 = 420.0;
@@ -187,45 +187,43 @@ pub fn render(view: &mut AppView, p: &Palette, cx: &mut Context<AppView>) -> Any
                 ),
         );
 
-    // ---- 展开的小时列表（24 个，8 列）----
+    // ---- 展开的小时列表：一列 24 项，超出滚动 ----
     if open_hour {
-        let mut grid = div().flex().w_full().flex_wrap().gap(px(4.0));
-        for h in 0..24u32 {
-            let chip = choice_chip(format!("{h:02}"), h == hour, 42.0, p);
-            grid = grid.child(if h == hour {
-                chip.into_any_element()
-            } else {
-                chip.id(SharedString::from(format!("pick-h-{h}")))
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                    this.picker_hour = h;
-                    this.open_select = OpenSelect::None;
-                    cx.notify();
-                }))
-                .into_any_element()
-            });
-        }
-        picker_block = picker_block.child(grid);
+        picker_block = picker_block.child(dropdown_list(
+            (0..24u32)
+                .map(|h| (format!("{h:02} 时"), h == hour))
+                .collect(),
+            176.0,
+            2,
+            "pick-hour",
+            p,
+            cx,
+            move |this, index| {
+                this.picker_hour = index as u32;
+                this.open_select = OpenSelect::None;
+            },
+        ));
     }
 
-    // ---- 展开的分钟列表（12 个，12 列）----
+    // ---- 展开的分钟列表：5 分钟一档，一列 12 项 ----
     if open_minute {
-        let mut grid = div().flex().w_full().flex_wrap().gap(px(4.0));
-        for index in 0..(60 / MINUTE_STEP) {
-            let m = index * MINUTE_STEP;
-            let chip = choice_chip(format!("{m:02}"), m == minute, 42.0, p);
-            grid = grid.child(if m == minute {
-                chip.into_any_element()
-            } else {
-                chip.id(SharedString::from(format!("pick-m-{m}")))
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                    this.picker_minute = m;
-                    this.open_select = OpenSelect::None;
-                    cx.notify();
-                }))
-                .into_any_element()
-            });
-        }
-        picker_block = picker_block.child(grid);
+        picker_block = picker_block.child(dropdown_list(
+            (0..(60 / MINUTE_STEP))
+                .map(|index| {
+                    let m = index * MINUTE_STEP;
+                    (format!("{m:02} 分"), m == minute)
+                })
+                .collect(),
+            176.0,
+            2,
+            "pick-minute",
+            p,
+            cx,
+            move |this, index| {
+                this.picker_minute = index as u32 * MINUTE_STEP;
+                this.open_select = OpenSelect::None;
+            },
+        ));
     }
 
     let conflict = view

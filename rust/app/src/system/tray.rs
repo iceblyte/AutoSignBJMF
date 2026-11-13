@@ -112,13 +112,22 @@ pub fn spawn(
                                 TranslateMessage(&message);
                                 DispatchMessageW(&message);
                             }
-                            // 双击托盘图标 = 打开主窗口
+                            // 左键单击 / 双击 = 打开主窗口（菜单已经改到右键）
                             while let Ok(event) = icon_events.try_recv() {
-                                if let TrayIconEvent::DoubleClick { button, .. } = event {
-                                    if matches!(button, tray_icon::MouseButton::Left) {
-                                        if let Ok(mut guard) = runtime.lock() {
-                                            guard.show_requested = true;
-                                        }
+                                let open = matches!(
+                                    event,
+                                    TrayIconEvent::Click {
+                                        button: tray_icon::MouseButton::Left,
+                                        button_state: tray_icon::MouseButtonState::Up,
+                                        ..
+                                    } | TrayIconEvent::DoubleClick {
+                                        button: tray_icon::MouseButton::Left,
+                                        ..
+                                    }
+                                );
+                                if open {
+                                    if let Ok(mut guard) = runtime.lock() {
+                                        guard.show_requested = true;
                                     }
                                 }
                             }
@@ -276,6 +285,8 @@ fn build_tray(autostart_on: bool) -> Result<(TrayIds, TrayItems, tray_icon::Tray
     let icon = Icon::from_rgba(rgba, width, height).map_err(|error| error.to_string())?;
     let tray = TrayIconBuilder::new()
         .with_menu(Box::new(menu))
+        // 默认是「左键弹菜单」，那样右键反而没反应；改成右键出菜单、左键直接开窗口
+        .with_menu_on_left_click(false)
         .with_tooltip("班级魔方自动签到")
         .with_icon(icon)
         .build()

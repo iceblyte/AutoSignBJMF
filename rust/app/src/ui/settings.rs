@@ -35,38 +35,67 @@ pub fn render(view: &mut AppView, p: &Palette, cx: &mut Context<AppView>) -> Any
         .border_color(rgb(p.line));
     for (tab, icon, title) in items {
         let active = view.settings_tab == tab;
-        nav = nav.child(
+        let mut item = div()
+            .id(gpui_kit::SharedString::from(format!("set-tab-{title}")))
+            .flex()
+            .items_center()
+            .gap(px(8.0))
+            .h(px(30.0))
+            .px(px(9.0))
+            .rounded(px(7.0))
+            .cursor_pointer()
+            // 选中项用强调色实底 + 白字（参考 ElegantClipboard 的导航）
+            .bg(rgb(if active { p.accent } else { p.surface_2 }))
+            .border_1()
+            .border_color(rgb(if active { p.accent } else { p.surface_2 }))
+            .on_click(cx.listener(move |view, _, _, cx| {
+                view.settings_tab = tab;
+                cx.notify();
+            }))
+            .child(
+                svg()
+                    .path(icon)
+                    .w(px(13.0))
+                    .h(px(13.0))
+                    .text_color(rgb(if active { 0xffffff } else { p.text_3 })),
+            )
+            .child(
+                div()
+                    .text_size(px(12.5))
+                    .text_color(rgb(if active { 0xffffff } else { p.text_2 }))
+                    .child(title),
+            );
+
+        if !active {
+            item = item.hover(|style| style.bg(rgb(p.surface_3)));
+        }
+        nav = nav.child(item);
+    }
+
+    // 底部版本信息（参考图的左下角）
+    nav = nav
+        .child(div().flex_1())
+        .child(
             div()
-                .id(gpui_kit::SharedString::from(format!("set-tab-{title}")))
                 .flex()
-                .items_center()
-                .gap(px(8.0))
-                .h(px(30.0))
-                .px(px(8.0))
-                .rounded(px(6.0))
-                .cursor_pointer()
-                .bg(rgb(if active { p.surface } else { p.surface_2 }))
-                .border_1()
-                .border_color(rgb(if active { p.line } else { p.surface_2 }))
-                .on_click(cx.listener(move |view, _, _, cx| {
-                    view.settings_tab = tab;
-                    cx.notify();
-                }))
+                .flex_col()
+                .gap(px(3.0))
+                .pt(px(10.0))
+                .border_t_1()
+                .border_color(rgb(p.line))
                 .child(
-                    svg()
-                        .path(icon)
-                        .w(px(13.0))
-                        .h(px(13.0))
-                        .text_color(rgb(if active { p.text_2 } else { p.text_3 })),
+                    div()
+                        .text_size(px(10.5))
+                        .text_color(rgb(p.text_3))
+                        .child(format!("版本号  v{}", env!("CARGO_PKG_VERSION"))),
                 )
                 .child(
                     div()
-                        .text_size(px(12.5))
-                        .text_color(rgb(if active { p.text } else { p.text_2 }))
-                        .child(title),
+                        .text_size(px(10.5))
+                        .text_color(rgb(p.text_3))
+                        .child("Rust 版 · MIT License"),
                 ),
         );
-    }
 
     div()
         .absolute()
@@ -282,8 +311,13 @@ fn general(view: &mut AppView, p: &Palette, cx: &mut Context<AppView>) -> AnyEle
                 ))
                 .child(row(
                     "同时只允许一个实例",
-                    "始终开启：重复启动会唤起已运行的窗口，避免重复签到",
-                    switch(true, true, p).into_any_element(),
+                    "这是固定行为，不提供开关：重复启动会唤起已运行的窗口，避免重复签到",
+                    // 不可关闭的项不放开关，免得看起来像「能点但点不动」
+                    div()
+                        .text_size(px(11.5))
+                        .text_color(rgb(p.text_3))
+                        .child("始终生效")
+                        .into_any_element(),
                     p,
                 )),
         )

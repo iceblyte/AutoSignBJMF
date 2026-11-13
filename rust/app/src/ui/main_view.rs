@@ -31,6 +31,10 @@ pub enum Field {
     RetryAttempts,
     RetryDelay,
     AddTime,
+    /// 手动添加账号：姓名
+    NewName,
+    /// 手动添加账号：班级 / 学号
+    NewClass,
 }
 
 impl Field {
@@ -43,10 +47,12 @@ impl Field {
             Field::RetryAttempts => 4,
             Field::RetryDelay => 5,
             Field::AddTime => 6,
+            Field::NewName => 7,
+            Field::NewClass => 8,
         }
     }
 
-    pub const ALL: [Field; 7] = [
+    pub const ALL: [Field; 9] = [
         Field::Lat,
         Field::Lng,
         Field::Wx,
@@ -54,6 +60,8 @@ impl Field {
         Field::RetryAttempts,
         Field::RetryDelay,
         Field::AddTime,
+        Field::NewName,
+        Field::NewClass,
     ];
 }
 
@@ -66,6 +74,8 @@ pub enum Overlay {
     CloseHint,
     /// 添加执行时间：从列表点选，不手输
     TimePicker,
+    /// 手动添加账号
+    AddAccount,
 }
 
 /// 当前展开了哪个下拉列表（同一时刻只允许一个）。
@@ -79,6 +89,9 @@ pub enum OpenSelect {
     /// 时间选择器里的分钟列表
     Minute,
 }
+
+/// 重试间隔的常用值（分钟），避免 60 个选项把列表拉太长。
+pub const RETRY_DELAYS: [u32; 10] = [1, 2, 3, 5, 10, 15, 20, 30, 45, 60];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SettingsTab {
@@ -108,6 +121,9 @@ pub struct AppView {
     /// 时间选择器里当前选中的时 / 分
     pub picker_hour: u32,
     pub picker_minute: u32,
+    /// 手动添加账号的输入
+    pub new_name: String,
+    pub new_class: String,
     /// 当前展开的下拉（重试次数 / 重试间隔 / 时 / 分）
     pub open_select: OpenSelect,
     /// 日志区的滚动位置（日志多了要能翻）
@@ -140,6 +156,7 @@ impl AppView {
                 "data" => Overlay::Settings(SettingsTab::Data),
                 "qr" => Overlay::Qr,
                 "time" => Overlay::TimePicker,
+                "add" => Overlay::AddAccount,
                 _ => Overlay::None,
             };
         }
@@ -191,6 +208,8 @@ impl AppView {
             qr_error: None,
             picker_hour,
             picker_minute,
+            new_name: String::new(),
+            new_class: String::new(),
             open_select: OpenSelect::None,
             log_scroll: ScrollHandle::new(),
             focus,
@@ -291,13 +310,26 @@ impl AppView {
             Field::RetryAttempts => draft.retry_attempts.clone(),
             Field::RetryDelay => draft.retry_delay.clone(),
             Field::AddTime => self.add_time.clone(),
+            Field::NewName => self.new_name.clone(),
+            Field::NewClass => self.new_class.clone(),
         }
     }
 
     fn set_value(&mut self, field: Field, value: String) {
-        if field == Field::AddTime {
-            self.add_time = value;
-            return;
+        match field {
+            Field::AddTime => {
+                self.add_time = value;
+                return;
+            }
+            Field::NewName => {
+                self.new_name = value;
+                return;
+            }
+            Field::NewClass => {
+                self.new_class = value;
+                return;
+            }
+            _ => {}
         }
         self.state.edit(|draft| match field {
             Field::Lat => draft.lat = value,
@@ -306,7 +338,7 @@ impl AppView {
             Field::Qq => draft.qq_key = value,
             Field::RetryAttempts => draft.retry_attempts = value,
             Field::RetryDelay => draft.retry_delay = value,
-            Field::AddTime => {}
+            Field::AddTime | Field::NewName | Field::NewClass => {}
         });
     }
 
@@ -399,21 +431,37 @@ impl AppView {
             .open(&path);
     }
 
-    /// 点通知开关：已配置就清空 Key（关掉渠道），未配置就聚焦输入框。
+    /// 点通知开关：只切换「渠道是否启用」，输入框跟着显示/隐藏，Key 一律保留。
     fn toggle_notify(&mut self, field: Field, window: &mut Window, cx: &mut Context<Self>) {
-        let (current, name) = match field {
-            Field::Wx => (self.state.draft.wx_key.clone(), "微信通知"),
-            _ => (self.state.draft.qq_key.clone(), "QQ 通知"),
+        let index = self.state.selected;
+        let Some(student) = self.state.config.students.get(index) else {
+            return;
         };
-        if current.trim().is_empty() {
+        let is_wx = field == Field::Wx;
+        let next = if is_wx {
+            !student.wx_enabled()
+        } else {
+            !student.qq_enabled()
+        };
+
+        if let Some(student) = self.state.config.students.get_mut(index) {
+            if is_wx {
+                student.wx_on = Some(next);
+            } else {
+                student.qq_on = Some(next);
+            }
+        }
+        let _ = self.state.config.save(self.state.paths.config_file());
+
+        let name = if is_wx { "微信通知" } else { "QQ 通知" };
+        if next {
             window.focus(&self.focus[field.index()], cx);
             self.state
-                .log(LogKind::Info, format!("填入 {name} 的 Key 后会自动启用"));
+                .log(LogKind::Info, format!("已开启{name}，填入 Key 后即可推送"));
         } else {
-            self.set_value(field, String::new());
             self.state.log(
-                LogKind::Warn,
-                format!("已关闭{name}：Key 已清空，填回去即可重新启用"),
+                LogKind::Info,
+                format!("已关闭{name}，Key 仍保留在 data.json 里"),
             );
         }
     }
@@ -685,12 +733,31 @@ impl AppView {
                     )
                     .child(div().flex_1())
                     .child(
-                        button("＋ 扫码添加", BtnKind::Default, BtnSize::Xs, false, p)
-                            .id("add-account")
-                            .cursor_pointer()
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.start_qr_login(window, cx);
-                            })),
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(5.0))
+                            // 扫码是唯一能拿到凭证的方式；手动只建条目，之后仍要扫码
+                            .child(
+                                button("＋ 扫码", BtnKind::Default, BtnSize::Xs, false, p)
+                                    .id("add-account")
+                                    .cursor_pointer()
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.start_qr_login(window, cx);
+                                    })),
+                            )
+                            .child(
+                                button("手动", BtnKind::Default, BtnSize::Xs, false, p)
+                                    .id("add-account-manual")
+                                    .cursor_pointer()
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.new_name.clear();
+                                        this.new_class.clear();
+                                        this.overlay = Overlay::AddAccount;
+                                        window.focus(&this.focus[Field::NewName.index()], cx);
+                                        cx.notify();
+                                    })),
+                            ),
                     ),
             )
             .child(div().flex_1().min_h_0().overflow_hidden().child(rows))
@@ -1058,8 +1125,22 @@ impl AppView {
 
         let lat = self.text_field(Field::Lat, true, readonly, p, cx);
         let lng = self.text_field(Field::Lng, true, readonly, p, cx);
-        let wx = self.text_field(Field::Wx, true, readonly, p, cx);
-        let qq = self.text_field(Field::Qq, true, readonly, p, cx);
+        // 渠道关掉时输入框整个不渲染，只留一行说明；Key 仍留在 data.json 里
+        let (wx_on, qq_on) = self
+            .state
+            .selected_student()
+            .map(|student| (student.wx_enabled(), student.qq_enabled()))
+            .unwrap_or((false, false));
+        let wx = if wx_on {
+            self.text_field(Field::Wx, true, readonly, p, cx)
+        } else {
+            closed_channel_hint("已关闭，打开开关后填写", p)
+        };
+        let qq = if qq_on {
+            self.text_field(Field::Qq, true, readonly, p, cx)
+        } else {
+            closed_channel_hint("已关闭，打开开关后填写", p)
+        };
 
         let pin = svg()
             .path("icons/pin.svg")
@@ -1113,7 +1194,7 @@ impl AppView {
                             .child(field_block_with_switch(
                                 notify_header(
                                     "微信通知 · Server 酱",
-                                    !self.state.draft.wx_key.trim().is_empty(),
+                                    wx_on,
                                     Field::Wx,
                                     readonly,
                                     p,
@@ -1124,7 +1205,7 @@ impl AppView {
                             .child(field_block_with_switch(
                                 notify_header(
                                     "QQ 通知 · Qmsg 酱",
-                                    !self.state.draft.qq_key.trim().is_empty(),
+                                    qq_on,
                                     Field::Qq,
                                     readonly,
                                     p,
@@ -1198,7 +1279,7 @@ impl AppView {
             readonly,
             p,
             cx,
-            |this| {
+            move |this| {
                 this.open_select = if this.open_select == OpenSelect::RetryAttempts {
                     OpenSelect::None
                 } else {
@@ -1214,7 +1295,7 @@ impl AppView {
             readonly,
             p,
             cx,
-            |this| {
+            move |this| {
                 this.open_select = if this.open_select == OpenSelect::RetryDelay {
                     OpenSelect::None
                 } else {
@@ -1294,35 +1375,35 @@ impl AppView {
                                     ),
                             )
                             .when(open_attempts, |row| {
-                                row.child(option_row(
+                                row.child(dropdown_list(
                                     (1..=10u32)
-                                        .map(|n| (n.to_string(), n == attempts_value))
+                                        .map(|n| (format!("{n} 次"), n == attempts_value))
                                         .collect(),
+                                    176.0,
+                                    2,
                                     "retry-attempts-opt",
                                     p,
                                     cx,
-                                    |this, picked| {
-                                        if let Ok(value) = picked.parse::<u32>() {
-                                            let _ = this.state.set_retry_attempts(value);
-                                        }
+                                    move |this, index| {
+                                        let _ = this.state.set_retry_attempts(index as u32 + 1);
                                         this.open_select = OpenSelect::None;
                                     },
                                 ))
                             })
                             .when(open_delay, |row| {
-                                row.child(option_row(
-                                    // 间隔给常用值，避免 60 个块把面板撑爆
-                                    [1u32, 2, 3, 5, 10, 15, 20, 30, 45, 60]
-                                        .into_iter()
-                                        .map(|n| (n.to_string(), n == delay_value))
+                                row.child(dropdown_list(
+                                    RETRY_DELAYS
+                                        .iter()
+                                        .map(|n| (format!("{n} 分钟"), *n == delay_value))
                                         .collect(),
+                                    176.0,
+                                    2,
                                     "retry-delay-opt",
                                     p,
                                     cx,
-                                    |this, picked| {
-                                        if let Ok(value) = picked.parse::<u32>() {
-                                            let _ = this.state.set_retry_delay(value);
-                                        }
+                                    move |this, index| {
+                                        let value = RETRY_DELAYS[index];
+                                        let _ = this.state.set_retry_delay(value);
                                         this.open_select = OpenSelect::None;
                                     },
                                 ))
@@ -1332,6 +1413,142 @@ impl AppView {
 
         // 注：时间点不再用文本输入（见 ui/time_picker.rs），这里不再渲染「新增时间点」行。
         panel.into_any_element()
+    }
+
+    /// 手动添加账号的弹窗：姓名必填，班级可空；凭证留给扫码。
+    fn render_add_account(&mut self, p: &Palette, cx: &mut Context<Self>) -> AnyElement {
+        let name_input = self.text_field(Field::NewName, false, false, p, cx);
+        let class_input = self.text_field(Field::NewClass, false, false, p, cx);
+        let can_add = !self.new_name.trim().is_empty();
+
+        div()
+            .absolute()
+            .inset_0()
+            .flex()
+            .items_center()
+            .justify_center()
+            .bg(rgba(0x0f121675))
+            .child(
+                div()
+                    .w(px(430.0))
+                    .flex()
+                    .flex_col()
+                    .rounded(px(14.0))
+                    .bg(rgb(p.surface))
+                    .border_1()
+                    .border_color(rgb(p.line))
+                    .overflow_hidden()
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .px(px(15.0))
+                            .py(px(13.0))
+                            .border_b_1()
+                            .border_color(rgb(p.line))
+                            .child(
+                                div()
+                                    .text_size(px(13.0))
+                                    .text_color(rgb(p.text))
+                                    .child("手动添加账号"),
+                            )
+                            .child(div().flex_1())
+                            .child(
+                                div()
+                                    .id("add-account-close")
+                                    .w(px(22.0))
+                                    .h(px(22.0))
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .rounded(px(5.0))
+                                    .text_size(px(14.0))
+                                    .text_color(rgb(p.text_3))
+                                    .cursor_pointer()
+                                    .hover(|style| style.bg(rgb(p.surface_3)))
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.overlay = Overlay::None;
+                                        cx.notify();
+                                    }))
+                                    .child("×"),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap(px(10.0))
+                            .px(px(16.0))
+                            .py(px(14.0))
+                            .child(
+                                div()
+                                    .text_size(px(11.0))
+                                    .text_color(rgb(p.text_3))
+                                    .child("先建条目，保存后再用「扫码」补齐登录凭证；没有凭证不会自动签到。"),
+                            )
+                            .child(field_block("姓名", name_input, p))
+                            .child(field_block("班级 / 学号（可留空）", class_input, p)),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(8.0))
+                            .px(px(16.0))
+                            .py(px(13.0))
+                            .border_t_1()
+                            .border_color(rgb(p.line))
+                            .child(
+                                div()
+                                    .text_size(px(11.0))
+                                    .text_color(rgb(p.text_3))
+                                    .child(if can_add {
+                                        "添加后会切到这个账号"
+                                    } else {
+                                        "姓名不能为空"
+                                    }),
+                            )
+                            .child(div().flex_1())
+                            .child(
+                                button("取消", BtnKind::Default, BtnSize::Small, false, p)
+                                    .id("add-account-cancel")
+                                    .cursor_pointer()
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.overlay = Overlay::None;
+                                        cx.notify();
+                                    })),
+                            )
+                            .child(
+                                button("添加", BtnKind::Primary, BtnSize::Small, !can_add, p)
+                                    .id("add-account-confirm")
+                                    .when(can_add, |element| {
+                                        element.cursor_pointer().on_click(cx.listener(
+                                            |this, _, _, cx| {
+                                                let name = this.new_name.clone();
+                                                let class = this.new_class.clone();
+                                                match this.state.add_student(&name, &class) {
+                                                    Ok(_) => {
+                                                        this.overlay = Overlay::None;
+                                                        this.new_name.clear();
+                                                        this.new_class.clear();
+                                                        this.error = None;
+                                                        this.state.log(
+                                                            LogKind::Info,
+                                                            format!("已添加账号 {name}，还需要扫码登录"),
+                                                        );
+                                                    }
+                                                    Err(error) => {
+                                                        this.error = Some(error.0);
+                                                    }
+                                                }
+                                                cx.notify();
+                                            },
+                                        ))
+                                    }),
+                            ),
+                    ),
+            )
+            .into_any_element()
     }
 
     fn render_log_panel(&self, p: &Palette, cx: &mut Context<Self>) -> AnyElement {
@@ -1713,6 +1930,8 @@ impl AppView {
             Field::RetryAttempts => "3",
             Field::RetryDelay => "5",
             Field::AddTime => "21:31",
+            Field::NewName => "例如：张明远",
+            Field::NewClass => "例如：2023 级计算机 1 班",
         };
         let empty = value.trim().is_empty();
         let index = field.index();
@@ -1828,6 +2047,24 @@ fn field_block(title: impl Into<SharedString>, input: AnyElement, p: &Palette) -
 }
 
 /// 标签前带开关的输入框列。
+/// 渠道关闭时代替输入框的一行说明，高度与输入框一致，避免两列错位。
+fn closed_channel_hint(text: &'static str, p: &Palette) -> AnyElement {
+    div()
+        .h(px(30.0))
+        .w_full()
+        .flex()
+        .items_center()
+        .px(px(10.0))
+        .rounded(px(7.0))
+        .border_1()
+        .border_color(rgb(p.line))
+        .bg(rgb(p.surface_2))
+        .text_size(px(11.5))
+        .text_color(rgb(p.text_3))
+        .child(text)
+        .into_any_element()
+}
+
 /// 通知渠道的标题行：开关 + 名称，整行可点。
 ///
 /// 开关状态就是「Key 是否非空」，所以点它等于：已配置 → 清空 Key（关掉渠道）；
@@ -1877,7 +2114,74 @@ fn field_block_with_switch(header: AnyElement, input: AnyElement) -> AnyElement 
         .into_any_element()
 }
 
-/// 下拉触发器：外观像输入框，右侧一个 ▾，点开后在下方展开选项行。
+/// 下拉列表：竖直选项，项多时分成几列一次显示，不靠滚动。
+///
+/// 之前试过「限高 + 滚动 + 打开时滚到当前值」，gpui 的 ScrollHandle 要等布局完成
+/// 才认目标项，时机不稳；直接按列铺开更可靠 —— 打开就能看到当前值。
+pub fn dropdown_list(
+    items: Vec<(String, bool)>,
+    width: f32,
+    columns: usize,
+    prefix: &'static str,
+    p: &Palette,
+    cx: &mut Context<AppView>,
+    on_pick: impl Fn(&mut AppView, usize) + 'static,
+) -> AnyElement {
+    let on_pick = std::rc::Rc::new(on_pick);
+    let columns = columns.max(1);
+    let per_column = items.len().div_ceil(columns);
+    let column_width = (width - 2.0 * (columns as f32 - 1.0)) / columns as f32;
+
+    let mut row = div().flex().gap(px(2.0)).flex_none();
+    for (column_index, chunk) in items.chunks(per_column.max(1)).enumerate() {
+        let mut column = div().flex().flex_col().flex_none().w(px(column_width));
+        for (offset, (label, selected)) in chunk.iter().enumerate() {
+            let index = column_index * per_column + offset;
+            let callback = on_pick.clone();
+            let base = div()
+                .id(SharedString::from(format!("{prefix}-item-{index}")))
+                .h(px(26.0))
+                .w_full()
+                .flex_none()
+                .flex()
+                .items_center()
+                .px(px(8.0))
+                .rounded(px(5.0))
+                .text_size(px(12.0))
+                .child(label.clone());
+
+            column = column.child(if *selected {
+                base.bg(rgb(p.accent))
+                    .text_color(rgb(0xffffff))
+                    .into_any_element()
+            } else {
+                base.text_color(rgb(p.text_2))
+                    .cursor_pointer()
+                    .hover(|style| style.bg(rgb(p.surface_3)).text_color(rgb(p.text)))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        callback(this, index);
+                        cx.notify();
+                    }))
+                    .into_any_element()
+            });
+        }
+        row = row.child(column);
+    }
+
+    div()
+        .id(SharedString::from(format!("{prefix}-list")))
+        .w(px(width))
+        .flex_none()
+        .rounded(px(8.0))
+        .border_1()
+        .border_color(rgb(p.line_2))
+        .bg(rgb(p.surface))
+        .p(px(4.0))
+        .child(row)
+        .into_any_element()
+}
+
+/// 下拉触发器：外观像输入框，右侧一个 ▼，点开后在下方展开一列选项。
 fn select_trigger(
     value: String,
     open: bool,
@@ -1921,36 +2225,6 @@ fn select_trigger(
             }));
     }
     trigger.into_any_element()
-}
-
-/// 展开的选项行：自动换行的一组 chip，选中项是强调色实底。
-fn option_row(
-    items: Vec<(String, bool)>,
-    prefix: &'static str,
-    p: &Palette,
-    cx: &mut Context<AppView>,
-    on_pick: impl Fn(&mut AppView, String) + 'static,
-) -> AnyElement {
-    let on_pick = std::rc::Rc::new(on_pick);
-    let mut row = div().flex().w_full().flex_wrap().gap(px(4.0));
-
-    for (value, selected) in items {
-        let id = SharedString::from(format!("{prefix}-{value}"));
-        let chip = choice_chip(value.clone(), selected, 44.0, p);
-        row = row.child(if selected {
-            chip.into_any_element()
-        } else {
-            let callback = on_pick.clone();
-            let picked = value.clone();
-            chip.id(id)
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    callback(this, picked.clone());
-                    cx.notify();
-                }))
-                .into_any_element()
-        });
-    }
-    row.into_any_element()
 }
 
 /// 窄输入框（保留给以后可能的手输场景）。
@@ -2057,6 +2331,7 @@ impl Render for AppView {
             Overlay::Qr => root = root.child(crate::ui::qr_modal::render(self, p, cx)),
             Overlay::Settings(_) => root = root.child(crate::ui::settings::render(self, p, cx)),
             Overlay::TimePicker => root = root.child(crate::ui::time_picker::render(self, p, cx)),
+            Overlay::AddAccount => root = root.child(self.render_add_account(p, cx)),
             Overlay::None => {}
         }
         root
