@@ -28,34 +28,27 @@ pub enum TrayAction {
     Quit,
 }
 
-/// 把菜单 id 映射成动作（纯函数，可测）。
-pub fn action_of(id: &str, ids: &TrayIds) -> Option<TrayAction> {
-    if id == ids.open {
-        Some(TrayAction::OpenWindow)
-    } else if id == ids.run_now {
-        Some(TrayAction::RunNow)
-    } else if id == ids.pause {
-        Some(TrayAction::TogglePause)
-    } else if id == ids.autostart {
-        Some(TrayAction::ToggleAutostart)
-    } else if id == ids.settings {
-        Some(TrayAction::Settings)
-    } else if id == ids.quit {
-        Some(TrayAction::Quit)
-    } else {
-        None
-    }
-}
+// 菜单项 id 显式指定成 ASCII 常量。
+// 之前用 MenuItem::new 让库自动生成 id，再拿 item.id() 去比 —— 点击事件里的 id
+// 与创建时取到的对不上，于是所有选项都匹配失败（只有「退出」因为直接 exit 才像是生效）。
+const ID_OPEN: &str = "bjmf-open";
+const ID_RUN_NOW: &str = "bjmf-run-now";
+const ID_PAUSE: &str = "bjmf-pause";
+const ID_AUTOSTART: &str = "bjmf-autostart";
+const ID_SETTINGS: &str = "bjmf-settings";
+const ID_QUIT: &str = "bjmf-quit";
 
-/// 菜单项 id 集合。
-#[derive(Debug, Clone, Default)]
-pub struct TrayIds {
-    pub open: String,
-    pub run_now: String,
-    pub pause: String,
-    pub autostart: String,
-    pub settings: String,
-    pub quit: String,
+/// 把菜单 id 映射成动作（纯函数，可测）。
+pub fn action_of(id: &str) -> Option<TrayAction> {
+    match id {
+        ID_OPEN => Some(TrayAction::OpenWindow),
+        ID_RUN_NOW => Some(TrayAction::RunNow),
+        ID_PAUSE => Some(TrayAction::TogglePause),
+        ID_AUTOSTART => Some(TrayAction::ToggleAutostart),
+        ID_SETTINGS => Some(TrayAction::Settings),
+        ID_QUIT => Some(TrayAction::Quit),
+        _ => None,
+    }
 }
 
 /// 托盘图标：程序 logo 的 32×32 位图。
@@ -91,12 +84,39 @@ pub fn spawn(
         .spawn(move || {
             let _keep = marker_thread;
             match build_tray(autostart_on) {
-                Ok((ids, items, _tray)) => {
+                Ok((items, _tray)) => {
                     let mut last_tick = std::time::Instant::now();
-                    let receiver = MenuEvent::receiver();
-                    let icon_events = TrayIconEvent::receiver();
-                    // 托盘线程要有消息循环，菜单才会弹出来；
-                    // 用 PeekMessage 非阻塞轮询，顺便处理菜单事件与退出标志。
+                    // 菜单点击改用 set_event_handler 接收（与 ElegantClipboard 一致）。
+                    // 之前是 MenuEvent::receiver() + try_recv 轮询 —— 事件根本到不了，
+                    // 所以除了直接 exit 的「退出」，其它菜单项都像点了没反应。
+                    {
+                        let shared = runtime.clone();
+                        let paused = paused.clone();
+                        let run_now = run_now.clone();
+                        MenuEvent::set_event_handler(Some(Box::new(move |event: MenuEvent| {
+                            apply_action(action_of(event.id.0.as_str()), &shared, &paused, &run_now);
+                        })));
+                    }
+                    {
+                        let shared = runtime.clone();
+                        TrayIconEvent::set_event_handler(Some(Box::new(
+                            move |event: TrayIconEvent| {
+                                // 菜单在右键，左键单击就直接把窗口叫出来
+                                if let TrayIconEvent::Click {
+                                    button: tray_icon::MouseButton::Left,
+                                    button_state: tray_icon::MouseButtonState::Up,
+                                    ..
+                                } = event
+                                {
+                                    if let Ok(mut guard) = shared.lock() {
+                                        guard.show_requested = true;
+                                    }
+                                }
+                            },
+                        )));
+                    }
+
+                    // 托盘线程仍然要有消息循环，否则菜单弹不出来
                     unsafe {
                         use windows_sys::Win32::UI::WindowsAndMessaging::{
                             DispatchMessageW, PeekMessageW, TranslateMessage, MSG, PM_REMOVE,
@@ -111,87 +131,6 @@ pub fn spawn(
                             {
                                 TranslateMessage(&message);
                                 DispatchMessageW(&message);
-                            }
-                            // 左键单击 / 双击 = 打开主窗口（菜单已经改到右键）
-                            while let Ok(event) = icon_events.try_recv() {
-                                let open = matches!(
-                                    event,
-                                    TrayIconEvent::Click {
-                                        button: tray_icon::MouseButton::Left,
-                                        button_state: tray_icon::MouseButtonState::Up,
-                                        ..
-                                    } | TrayIconEvent::DoubleClick {
-                                        button: tray_icon::MouseButton::Left,
-                                        ..
-                                    }
-                                );
-                                if open {
-                                    if let Ok(mut guard) = runtime.lock() {
-                                        guard.show_requested = true;
-                                    }
-                                }
-                            }
-                            while let Ok(event) = receiver.try_recv() {
-                                match action_of(event.id.0.as_str(), &ids) {
-                                    Some(TrayAction::OpenWindow) => {
-                                        if let Ok(mut guard) = runtime.lock() {
-                                            guard.show_requested = true;
-                                        }
-                                    }
-                                    Some(TrayAction::RunNow) => {
-                                        run_now.store(true, Ordering::SeqCst);
-                                        if let Ok(mut guard) = runtime.lock() {
-                                            guard.pending.push((
-                                                LogKind::Info,
-                                                "托盘：立即签到全部".into(),
-                                            ));
-                                        }
-                                    }
-                                    Some(TrayAction::TogglePause) => {
-                                        let next = !paused.load(Ordering::Relaxed);
-                                        paused.store(next, Ordering::SeqCst);
-                                        if let Ok(mut guard) = runtime.lock() {
-                                            guard.paused = next;
-                                            guard.pending.push((
-                                                LogKind::Info,
-                                                if next {
-                                                    "托盘：已暂停全部".to_string()
-                                                } else {
-                                                    "托盘：已恢复".to_string()
-                                                },
-                                            ));
-                                        }
-                                    }
-                                    Some(TrayAction::ToggleAutostart) => {
-                                        let next = !crate::system::autostart::is_enabled();
-                                        crate::system::autostart::set_enabled(next);
-                                        if let Ok(mut guard) = runtime.lock() {
-                                            guard.pending.push((
-                                                LogKind::Info,
-                                                if next {
-                                                    "托盘：已开启开机自启".to_string()
-                                                } else {
-                                                    "托盘：已关闭开机自启".to_string()
-                                                },
-                                            ));
-                                        }
-                                    }
-                                    Some(TrayAction::Settings) => {
-                                        if let Ok(mut guard) = runtime.lock() {
-                                            guard.show_requested = true;
-                                            guard.show_settings = true;
-                                            guard.pending.push((
-                                                LogKind::Info,
-                                                "托盘：打开设置".into(),
-                                            ));
-                                        }
-                                    }
-                                    Some(TrayAction::Quit) => {
-                                        stop.store(true, Ordering::SeqCst);
-                                        std::process::exit(0);
-                                    }
-                                    None => {}
-                                }
                             }
                             // 每 2 秒把「开机自启 / 暂停」两行的文字刷成真实状态，
                             // 免得设置页改了之后菜单文案还是启动时的快照
@@ -234,11 +173,74 @@ struct TrayItems {
     pause: MenuItem,
 }
 
-fn build_tray(autostart_on: bool) -> Result<(TrayIds, TrayItems, tray_icon::TrayIcon), String> {
-    let open = MenuItem::new("打开主窗口", true, None);
-    let run_now = MenuItem::new("立即签到全部", true, None);
-    let pause = MenuItem::new("暂停全部", true, None);
-    let autostart = MenuItem::new(
+/// 菜单动作的实际效果：全部只写共享状态，真正的动作由界面/调度线程消费。
+fn apply_action(
+    action: Option<TrayAction>,
+    shared: &crate::runtime::SharedHandle,
+    paused: &Arc<std::sync::atomic::AtomicBool>,
+    run_now: &Arc<std::sync::atomic::AtomicBool>,
+) {
+    match action {
+        Some(TrayAction::OpenWindow) => {
+            if let Ok(mut guard) = shared.lock() {
+                guard.show_requested = true;
+            }
+        }
+        Some(TrayAction::RunNow) => {
+            run_now.store(true, Ordering::SeqCst);
+            if let Ok(mut guard) = shared.lock() {
+                guard
+                    .pending
+                    .push((LogKind::Info, "托盘：立即签到全部".into()));
+            }
+        }
+        Some(TrayAction::TogglePause) => {
+            let next = !paused.load(Ordering::Relaxed);
+            paused.store(next, Ordering::SeqCst);
+            if let Ok(mut guard) = shared.lock() {
+                guard.paused = next;
+                guard.pending.push((
+                    LogKind::Info,
+                    if next {
+                        "托盘：已暂停全部".to_string()
+                    } else {
+                        "托盘：已恢复".to_string()
+                    },
+                ));
+            }
+        }
+        Some(TrayAction::ToggleAutostart) => {
+            let next = !crate::system::autostart::is_enabled();
+            crate::system::autostart::set_enabled(next);
+            if let Ok(mut guard) = shared.lock() {
+                guard.pending.push((
+                    LogKind::Info,
+                    if next {
+                        "托盘：已开启开机自启".to_string()
+                    } else {
+                        "托盘：已关闭开机自启".to_string()
+                    },
+                ));
+            }
+        }
+        Some(TrayAction::Settings) => {
+            if let Ok(mut guard) = shared.lock() {
+                guard.show_requested = true;
+                guard.show_settings = true;
+                guard.pending.push((LogKind::Info, "托盘：打开设置".into()));
+            }
+        }
+        Some(TrayAction::Quit) => std::process::exit(0),
+        None => {}
+    }
+}
+
+fn build_tray(autostart_on: bool) -> Result<(TrayItems, tray_icon::TrayIcon), String> {
+    let open = MenuItem::with_id(ID_OPEN, "打开主窗口", true, None);
+    let run_now = MenuItem::with_id(ID_RUN_NOW, "立即签到全部", true, None);
+    let pause = MenuItem::with_id(ID_PAUSE, "暂停全部", true, None);
+    let autostart = MenuItem::with_id(
+        ID_AUTOSTART,
         if autostart_on {
             "开机自启（已开启）"
         } else {
@@ -247,21 +249,12 @@ fn build_tray(autostart_on: bool) -> Result<(TrayIds, TrayItems, tray_icon::Tray
         true,
         None,
     );
-    let settings = MenuItem::new("设置", true, None);
-    let quit = MenuItem::new("退出", true, None);
+    let settings = MenuItem::with_id(ID_SETTINGS, "设置", true, None);
+    let quit = MenuItem::with_id(ID_QUIT, "退出", true, None);
 
     let items = TrayItems {
         autostart: autostart.clone(),
         pause: pause.clone(),
-    };
-
-    let ids = TrayIds {
-        open: open.id().0.clone(),
-        run_now: run_now.id().0.clone(),
-        pause: pause.id().0.clone(),
-        autostart: autostart.id().0.clone(),
-        settings: settings.id().0.clone(),
-        quit: quit.id().0.clone(),
     };
 
     let menu = Menu::new();
@@ -288,7 +281,7 @@ fn build_tray(autostart_on: bool) -> Result<(TrayIds, TrayItems, tray_icon::Tray
         .build()
         .map_err(|error| error.to_string())?;
 
-    Ok((ids, items, tray))
+    Ok((items, tray))
 }
 
 #[cfg(test)]
@@ -325,17 +318,39 @@ mod tests {
 
     #[test]
     fn 菜单动作映射() {
-        let ids = TrayIds {
-            open: "1".into(),
-            run_now: "2".into(),
-            pause: "3".into(),
-            autostart: "4".into(),
-            settings: "5".into(),
-            quit: "6".into(),
-        };
-        assert_eq!(action_of("1", &ids), Some(TrayAction::OpenWindow));
-        assert_eq!(action_of("3", &ids), Some(TrayAction::TogglePause));
-        assert_eq!(action_of("6", &ids), Some(TrayAction::Quit));
-        assert_eq!(action_of("99", &ids), None);
+        assert_eq!(action_of(ID_OPEN), Some(TrayAction::OpenWindow));
+        assert_eq!(action_of(ID_RUN_NOW), Some(TrayAction::RunNow));
+        assert_eq!(action_of(ID_PAUSE), Some(TrayAction::TogglePause));
+        assert_eq!(action_of(ID_AUTOSTART), Some(TrayAction::ToggleAutostart));
+        assert_eq!(action_of(ID_SETTINGS), Some(TrayAction::Settings));
+        assert_eq!(action_of(ID_QUIT), Some(TrayAction::Quit));
+        assert_eq!(action_of("99"), None, "未知 id 不能被误判");
+    }
+
+    #[test]
+    fn 菜单动作会真的写到共享状态() {
+        use crate::runtime::Shared;
+        use std::sync::atomic::AtomicBool;
+        use std::sync::Mutex;
+
+        let shared = Arc::new(Mutex::new(Shared::default()));
+        let paused = Arc::new(AtomicBool::new(false));
+        let run_now = Arc::new(AtomicBool::new(false));
+
+        apply_action(Some(TrayAction::RunNow), &shared, &paused, &run_now);
+        assert!(run_now.load(Ordering::SeqCst), "立即签到要置位");
+
+        apply_action(Some(TrayAction::TogglePause), &shared, &paused, &run_now);
+        assert!(paused.load(Ordering::SeqCst), "暂停要真的切换");
+        assert!(shared.lock().unwrap().paused, "界面读到的也是暂停");
+
+        apply_action(Some(TrayAction::OpenWindow), &shared, &paused, &run_now);
+        assert!(
+            shared.lock().unwrap().show_requested,
+            "打开窗口要置请求，否则点了没反应"
+        );
+
+        apply_action(Some(TrayAction::Settings), &shared, &paused, &run_now);
+        assert!(shared.lock().unwrap().show_settings, "设置要额外带上标记");
     }
 }

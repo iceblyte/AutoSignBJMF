@@ -17,6 +17,8 @@ use gpui_kit::prelude::*;
 use gpui_kit::*;
 use gpui_kit::base::StyledExt;
 
+use gpui_kit::component::scroll::ScrollableElement;
+
 use crate::state::{AccountStatus, AppState, LogKind, PillTone};
 use crate::theme::*;
 use crate::ui::widgets::*;
@@ -167,6 +169,34 @@ impl AppView {
                     } else {
                         view.import_config(cx);
                     }
+                });
+            })
+            .detach();
+        }
+
+        // QA 回归用：AUTOSIGN_TEST_TOGGLE=wx|qq 启动 3 秒后切换对应通知渠道，
+        // 用来验证「关掉后输入框是否真的消失」。
+        if let Ok(which) = std::env::var("AUTOSIGN_TEST_TOGGLE") {
+            cx.spawn(async move |this, cx| {
+                cx.background_executor()
+                    .timer(std::time::Duration::from_secs(3))
+                    .await;
+                let _ = this.update(cx, |view, cx| {
+                    let index = view.state.selected;
+                    let is_wx = which == "wx";
+                    if let Some(student) = view.state.config.students.get_mut(index) {
+                        let next = if is_wx {
+                            !student.wx_enabled()
+                        } else {
+                            !student.qq_enabled()
+                        };
+                        if is_wx {
+                            student.wx_on = Some(next);
+                        } else {
+                            student.qq_on = Some(next);
+                        }
+                    }
+                    cx.notify();
                 });
             })
             .detach();
@@ -589,6 +619,8 @@ impl AppView {
                 format!("已关闭{name}，Key 仍保留在 data.json 里"),
             );
         }
+        // 少了这一句，状态改了但界面不刷新，表现出来就是「开关点不动、输入框不消失」
+        cx.notify();
     }
 
     /// 导出到指定路径。（文件对话框回来后调用；也是单测入口）
@@ -2183,22 +2215,18 @@ fn dropdown_overlay(
 pub fn dropdown_list(
     items: Vec<(String, bool)>,
     width: f32,
-    columns: usize,
+    _columns: usize,
     prefix: &'static str,
     p: &Palette,
     cx: &mut Context<AppView>,
     on_pick: impl Fn(&mut AppView, usize) + 'static,
 ) -> AnyElement {
     let on_pick = std::rc::Rc::new(on_pick);
-    let columns = columns.max(1);
-    let per_column = items.len().div_ceil(columns);
-    let column_width = (width - 2.0 * (columns as f32 - 1.0)) / columns as f32;
 
-    let mut row = div().flex().gap(px(2.0)).flex_none();
-    for (column_index, chunk) in items.chunks(per_column.max(1)).enumerate() {
-        let mut column = div().flex().flex_col().flex_none().w(px(column_width));
-        for (offset, (label, selected)) in chunk.iter().enumerate() {
-            let index = column_index * per_column + offset;
+    // 单列：超出高度就滚动（用户明确要「一列下拉」，不要多列）
+    {
+        let mut column = div().flex().flex_col().flex_none().w_full();
+        for (index, (label, selected)) in items.iter().enumerate() {
             let callback = on_pick.clone();
             let base = div()
                 .id(SharedString::from(format!("{prefix}-item-{index}")))
@@ -2227,22 +2255,21 @@ pub fn dropdown_list(
                     .into_any_element()
             });
         }
-        row = row.child(column);
-    }
 
-    div()
-        .id(SharedString::from(format!("{prefix}-list")))
-        .w(px(width))
-        .flex_none()
-        .rounded(px(8.0))
-        .border_1()
-        .border_color(rgb(p.line_2))
-        .bg(rgb(p.surface))
-        // 选中态是实底，不裁剪的话会盖住圆角
-        .overflow_hidden()
-        .p(px(4.0))
-        .child(row)
-        .into_any_element()
+        div()
+            .id(SharedString::from(format!("{prefix}-list")))
+            .w(px(width))
+            .flex_none()
+            .rounded(px(8.0))
+            .border_1()
+            .border_color(rgb(p.line_2))
+            .bg(rgb(p.surface))
+            // 选中态是实底，不裁剪的话会盖住圆角
+            .overflow_hidden()
+            .p(px(4.0))
+            .child(column.max_h(px(232.0)).overflow_y_scrollbar())
+            .into_any_element()
+    }
 }
 
 /// 下拉触发器：外观像输入框，右侧一个 ▼，点开后在下方展开一列选项。
