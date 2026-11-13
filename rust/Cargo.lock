@@ -818,6 +818,7 @@ dependencies = [
 name = "bjmf-app"
 version = "0.1.0"
 dependencies = [
+ "async-channel 2.5.0",
  "bjmf-core",
  "chrono",
  "embed-resource 2.5.2",

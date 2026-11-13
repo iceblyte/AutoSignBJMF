@@ -147,6 +147,25 @@ GPUI 单进程就能同时满足「开窗 55 MB」「关窗后不掉到几百兆
   回归脚本：`python rust/_tools/close_test.py`（拉起 → 发 WM_CLOSE → 断言隐藏且进程存活）
 - 打包：`build/build-rust.ps1`（`-Portable` 额外出一份便携 zip，包内不含任何账号数据）
 
+### 已完成（第十四轮）
+
+**托盘即时响应**（对齐 ElegantClipboard 的 channel 做法）：
+
+- 原来：托盘菜单把意图写进共享状态，主线程每秒 tick 读一次 —— 点下去最坏要等 1 秒，
+  手感上就像没反应
+- 现在：托盘线程 `try_send(TrayCommand)` → 界面 `cx.spawn` 里 `receiver.recv().await` →
+  立刻 `apply_tray_command` + `cx.notify()`
+- `Shared` 里的 `show_requested` / `show_settings` 两个轮询标志一并删掉
+- 托盘线程不再碰 `Shared`（只发命令），职责更清楚
+
+实测（`AUTOSIGN_TEST_TRAY=runnow` 往通道塞一条命令）：
+
+```
+16:25:35 QA：模拟托盘命令 RunNow（发出=true）
+16:25:35 已请求立即签到          ← 同一秒，之前要等下一次 tick
+16:25:36 开始执行一轮签到
+```
+
 ### 已完成（第十三轮）
 
 对照 ElegantClipboard（同为 gpui + gpui-kit）做了一轮代码审查，落地的改动：

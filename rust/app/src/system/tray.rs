@@ -10,11 +10,21 @@ use tray_icon::menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem};
 use tray_icon::TrayIconEvent;
 use tray_icon::{Icon, TrayIconBuilder};
 
-use crate::state::LogKind;
 
 /// 托盘句柄。真正让图标活着的是线程里那个变量，这里只留一个「还活着」的凭证。
 pub struct TrayHandle {
     _marker: Arc<()>,
+}
+
+/// 托盘命令：由托盘线程发出，UI 线程立即消费（不再走「写共享状态 + 每秒轮询」）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TrayCommand {
+    Open,
+    RunNow,
+    TogglePause,
+    ToggleAutostart,
+    Settings,
+    Quit,
 }
 
 /// 菜单项动作。
@@ -70,10 +80,9 @@ pub fn icon_rgba() -> (Vec<u8>, u32, u32) {
 
 /// 起托盘线程。`shared` 里的字段被菜单直接改写。
 pub fn spawn(
-    runtime: crate::runtime::SharedHandle,
+    commands: async_channel::Sender<TrayCommand>,
     paused: Arc<std::sync::atomic::AtomicBool>,
     stop: Arc<std::sync::atomic::AtomicBool>,
-    run_now: Arc<std::sync::atomic::AtomicBool>,
     autostart_on: bool,
 ) -> Result<TrayHandle, String> {
     let marker = Arc::new(());
@@ -90,15 +99,16 @@ pub fn spawn(
                     // 之前是 MenuEvent::receiver() + try_recv 轮询 —— 事件根本到不了，
                     // 所以除了直接 exit 的「退出」，其它菜单项都像点了没反应。
                     {
-                        let shared = runtime.clone();
-                        let paused = paused.clone();
-                        let run_now = run_now.clone();
+                        let commands = commands.clone();
                         MenuEvent::set_event_handler(Some(Box::new(move |event: MenuEvent| {
-                            apply_action(action_of(event.id.0.as_str()), &shared, &paused, &run_now);
+                            if let Some(command) = command_of(action_of(event.id.0.as_str())) {
+                                // 发不出去（channel 关闭）时什么也不做，至少不 panic
+                                let _ = commands.try_send(command);
+                            }
                         })));
                     }
                     {
-                        let shared = runtime.clone();
+                        let commands = commands.clone();
                         TrayIconEvent::set_event_handler(Some(Box::new(
                             move |event: TrayIconEvent| {
                                 // 菜单在右键，左键单击就直接把窗口叫出来
@@ -108,9 +118,7 @@ pub fn spawn(
                                     ..
                                 } = event
                                 {
-                                    if let Ok(mut guard) = shared.lock() {
-                                        guard.show_requested = true;
-                                    }
+                                    let _ = commands.try_send(TrayCommand::Open);
                                 }
                             },
                         )));
@@ -154,11 +162,8 @@ pub fn spawn(
                     }
                 }
                 Err(error) => {
-                    if let Ok(mut guard) = runtime.lock() {
-                        guard
-                            .pending
-                            .push((LogKind::Warn, format!("托盘创建失败：{error}")));
-                    }
+                    // 托盘起不来不影响签到，记一笔就够了（界面日志由 runtime 那边补）
+                    eprintln!("托盘创建失败：{error}");
                 }
             }
         })
@@ -173,65 +178,16 @@ struct TrayItems {
     pause: MenuItem,
 }
 
-/// 菜单动作的实际效果：全部只写共享状态，真正的动作由界面/调度线程消费。
-fn apply_action(
-    action: Option<TrayAction>,
-    shared: &crate::runtime::SharedHandle,
-    paused: &Arc<std::sync::atomic::AtomicBool>,
-    run_now: &Arc<std::sync::atomic::AtomicBool>,
-) {
+/// 菜单动作 → 命令（纯函数，方便测试）。
+pub fn command_of(action: Option<TrayAction>) -> Option<TrayCommand> {
     match action {
-        Some(TrayAction::OpenWindow) => {
-            if let Ok(mut guard) = shared.lock() {
-                guard.show_requested = true;
-            }
-        }
-        Some(TrayAction::RunNow) => {
-            run_now.store(true, Ordering::SeqCst);
-            if let Ok(mut guard) = shared.lock() {
-                guard
-                    .pending
-                    .push((LogKind::Info, "托盘：立即签到全部".into()));
-            }
-        }
-        Some(TrayAction::TogglePause) => {
-            let next = !paused.load(Ordering::Relaxed);
-            paused.store(next, Ordering::SeqCst);
-            if let Ok(mut guard) = shared.lock() {
-                guard.paused = next;
-                guard.pending.push((
-                    LogKind::Info,
-                    if next {
-                        "托盘：已暂停全部".to_string()
-                    } else {
-                        "托盘：已恢复".to_string()
-                    },
-                ));
-            }
-        }
-        Some(TrayAction::ToggleAutostart) => {
-            let next = !crate::system::autostart::is_enabled();
-            crate::system::autostart::set_enabled(next);
-            if let Ok(mut guard) = shared.lock() {
-                guard.pending.push((
-                    LogKind::Info,
-                    if next {
-                        "托盘：已开启开机自启".to_string()
-                    } else {
-                        "托盘：已关闭开机自启".to_string()
-                    },
-                ));
-            }
-        }
-        Some(TrayAction::Settings) => {
-            if let Ok(mut guard) = shared.lock() {
-                guard.show_requested = true;
-                guard.show_settings = true;
-                guard.pending.push((LogKind::Info, "托盘：打开设置".into()));
-            }
-        }
-        Some(TrayAction::Quit) => std::process::exit(0),
-        None => {}
+        Some(TrayAction::OpenWindow) => Some(TrayCommand::Open),
+        Some(TrayAction::RunNow) => Some(TrayCommand::RunNow),
+        Some(TrayAction::TogglePause) => Some(TrayCommand::TogglePause),
+        Some(TrayAction::ToggleAutostart) => Some(TrayCommand::ToggleAutostart),
+        Some(TrayAction::Settings) => Some(TrayCommand::Settings),
+        Some(TrayAction::Quit) => Some(TrayCommand::Quit),
+        None => None,
     }
 }
 
@@ -328,29 +284,28 @@ mod tests {
     }
 
     #[test]
-    fn 菜单动作会真的写到共享状态() {
-        use crate::runtime::Shared;
-        use std::sync::atomic::AtomicBool;
-        use std::sync::Mutex;
-
-        let shared = Arc::new(Mutex::new(Shared::default()));
-        let paused = Arc::new(AtomicBool::new(false));
-        let run_now = Arc::new(AtomicBool::new(false));
-
-        apply_action(Some(TrayAction::RunNow), &shared, &paused, &run_now);
-        assert!(run_now.load(Ordering::SeqCst), "立即签到要置位");
-
-        apply_action(Some(TrayAction::TogglePause), &shared, &paused, &run_now);
-        assert!(paused.load(Ordering::SeqCst), "暂停要真的切换");
-        assert!(shared.lock().unwrap().paused, "界面读到的也是暂停");
-
-        apply_action(Some(TrayAction::OpenWindow), &shared, &paused, &run_now);
-        assert!(
-            shared.lock().unwrap().show_requested,
-            "打开窗口要置请求，否则点了没反应"
+    fn 每个菜单项都能映射成命令() {
+        assert_eq!(
+            command_of(Some(TrayAction::OpenWindow)),
+            Some(TrayCommand::Open)
         );
-
-        apply_action(Some(TrayAction::Settings), &shared, &paused, &run_now);
-        assert!(shared.lock().unwrap().show_settings, "设置要额外带上标记");
+        assert_eq!(
+            command_of(Some(TrayAction::RunNow)),
+            Some(TrayCommand::RunNow)
+        );
+        assert_eq!(
+            command_of(Some(TrayAction::TogglePause)),
+            Some(TrayCommand::TogglePause)
+        );
+        assert_eq!(
+            command_of(Some(TrayAction::ToggleAutostart)),
+            Some(TrayCommand::ToggleAutostart)
+        );
+        assert_eq!(
+            command_of(Some(TrayAction::Settings)),
+            Some(TrayCommand::Settings)
+        );
+        assert_eq!(command_of(Some(TrayAction::Quit)), Some(TrayCommand::Quit));
+        assert_eq!(command_of(None), None);
     }
 }

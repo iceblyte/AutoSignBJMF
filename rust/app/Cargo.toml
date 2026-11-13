@@ -18,6 +18,8 @@ gpui-kit = "0.9"
 chrono.workspace = true
 serde_json.workspace = true
 tray-icon = "0.26"
+# 托盘事件用 channel 直接送到 UI 线程，替代「写共享状态 + 每秒轮询」
+async-channel = "2"
 rfd = "0.15"
 windows-sys = { version = "0.59", features = [
     "Win32_Foundation",

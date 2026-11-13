@@ -28,10 +28,6 @@ pub struct Shared {
     pub last_exit: Option<i32>,
     /// 待界面消费的日志（界面取走后清空）
     pub pending: Vec<(LogKind, String)>,
-    /// 托盘请求把主窗口提到前台
-    pub show_requested: bool,
-    /// 托盘「设置」：提窗口的同时切到设置页
-    pub show_settings: bool,
 }
 
 pub type SharedHandle = Arc<Mutex<Shared>>;
@@ -43,6 +39,10 @@ pub struct Runtime {
     paused: Arc<AtomicBool>,
     /// 被单独暂停的账号下标（界面上按账号暂停）
     paused_accounts: Arc<Mutex<std::collections::BTreeSet<usize>>>,
+    /// 托盘命令的接收端（交给界面消费，消费一次就没了）
+    tray_events: Mutex<Option<async_channel::Receiver<crate::system::tray::TrayCommand>>>,
+    /// 发送端留一份：QA 场景用来模拟「托盘被点击」
+    tray_commands: async_channel::Sender<crate::system::tray::TrayCommand>,
     run_now: Arc<AtomicBool>,
     pub tray: Option<crate::system::tray::TrayHandle>,
 }
@@ -232,14 +232,15 @@ impl Runtime {
         }
 
         // ---- 托盘 ----
-        // 截图/自动化场景可以关掉托盘（也便于排查托盘相关问题）
+        // 菜单点击 → channel → 界面 spawn 的任务立即处理，
+        // 不再「写共享状态 + 等下一次 tick」，所以点下去是即时响应的。
+        let (tray_tx, tray_rx) = async_channel::unbounded();
         let tray_enabled = std::env::var_os("AUTOSIGN_NO_TRAY").is_none();
         let tray = if tray_enabled {
             crate::system::tray::spawn(
-                shared.clone(),
+                tray_tx.clone(),
                 paused.clone(),
                 stop.clone(),
-                run_now.clone(),
                 autostart_on,
             )
             .ok()
@@ -252,6 +253,8 @@ impl Runtime {
             stop,
             paused,
             paused_accounts,
+            tray_events: Mutex::new(Some(tray_rx)),
+            tray_commands: tray_tx,
             run_now,
             tray,
         }
@@ -266,6 +269,18 @@ impl Runtime {
 
     pub fn is_paused(&self) -> bool {
         self.paused.load(Ordering::SeqCst)
+    }
+
+    /// 取走托盘事件接收端（只能取一次，界面启动时拿走）。
+    pub fn take_tray_events(
+        &self,
+    ) -> Option<async_channel::Receiver<crate::system::tray::TrayCommand>> {
+        self.tray_events.lock().ok().and_then(|mut guard| guard.take())
+    }
+
+    /// 往托盘事件通道里塞一条命令（QA 用来模拟点击托盘菜单）。
+    pub fn send_tray_command(&self, command: crate::system::tray::TrayCommand) -> bool {
+        self.tray_commands.try_send(command).is_ok()
     }
 
     /// 单独暂停 / 恢复某个账号。
@@ -306,12 +321,6 @@ impl Runtime {
     }
 
     /// 托盘是否请求把窗口提到前台（取走即清）。
-    pub fn take_show_request(&self) -> bool {
-        match self.shared.lock() {
-            Ok(mut guard) => std::mem::take(&mut guard.show_requested),
-            Err(_) => false,
-        }
-    }
 
     /// 把共享状态里攒下的日志搬到界面上。
     pub fn drain(&self) -> Vec<(LogKind, String)> {

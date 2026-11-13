@@ -176,6 +176,32 @@ impl AppView {
             .detach();
         }
 
+        // QA 回归用：AUTOSIGN_TEST_TRAY=runnow|pause|open 启动 3 秒后往托盘通道塞一条命令，
+        // 验证「托盘点击 → channel → 界面立即处理」这条链路（不必真的去点托盘）。
+        if let Ok(which) = std::env::var("AUTOSIGN_TEST_TRAY") {
+            let command = match which.as_str() {
+                "pause" => Some(crate::system::tray::TrayCommand::TogglePause),
+                "open" => Some(crate::system::tray::TrayCommand::Open),
+                _ => Some(crate::system::tray::TrayCommand::RunNow),
+            };
+            if let Some(command) = command {
+                cx.spawn(async move |this, cx| {
+                    cx.background_executor()
+                        .timer(std::time::Duration::from_secs(3))
+                        .await;
+                    let _ = this.update(cx, |view, cx| {
+                        let sent = view.runtime.send_tray_command(command);
+                        view.state.log(
+                            LogKind::Info,
+                            format!("QA：模拟托盘命令 {command:?}（发出={sent}）"),
+                        );
+                        cx.notify();
+                    });
+                })
+                .detach();
+            }
+        }
+
         // QA 回归用：AUTOSIGN_TEST_TOGGLE=wx|qq 启动 3 秒后切换对应通知渠道，
         // 用来验证「关掉后输入框是否真的消失」。
         if let Ok(which) = std::env::var("AUTOSIGN_TEST_TOGGLE") {
@@ -305,7 +331,75 @@ impl AppView {
     }
 
     /// 每秒把调度线程的状态与日志搬进界面。
+    /// 托盘事件消费：命令一到就立刻处理并重绘，不等下一次 tick。
+    ///
+    /// 之前是「托盘写共享标志 → 主线程每秒 tick 读一次」，点了最坏要等 1 秒，
+    /// 手感上就像没反应。改成 async_channel 之后是即时的。
+    fn spawn_tray_events(&mut self, cx: &mut Context<Self>) {
+        let Some(receiver) = self.runtime.take_tray_events() else {
+            return;
+        };
+        cx.spawn(async move |this, cx| {
+            while let Ok(command) = receiver.recv().await {
+                let _ = this.update(cx, |view, cx| {
+                    view.apply_tray_command(command, cx);
+                });
+            }
+        })
+        .detach();
+    }
+
+    /// 执行一条托盘命令。
+    fn apply_tray_command(
+        &mut self,
+        command: crate::system::tray::TrayCommand,
+        cx: &mut Context<Self>,
+    ) {
+        use crate::system::tray::TrayCommand;
+        match command {
+            TrayCommand::Open => {
+                crate::system::win::show_main_window();
+                self.overlay = Overlay::None;
+            }
+            TrayCommand::Settings => {
+                crate::system::win::show_main_window();
+                self.open_settings(cx);
+            }
+            TrayCommand::RunNow => {
+                self.run_now();
+            }
+            TrayCommand::TogglePause => {
+                let next = !self.state.paused;
+                self.runtime.set_paused(next);
+                self.state.paused = next;
+                self.state.log(
+                    LogKind::Info,
+                    if next {
+                        "托盘：已暂停全部账号".to_string()
+                    } else {
+                        "托盘：已恢复全部账号".to_string()
+                    },
+                );
+            }
+            TrayCommand::ToggleAutostart => {
+                let next = !crate::system::autostart::is_enabled();
+                crate::system::autostart::set_enabled(next);
+                self.state.log(
+                    LogKind::Info,
+                    if next {
+                        "托盘：已开启开机自启".to_string()
+                    } else {
+                        "托盘：已关闭开机自启".to_string()
+                    },
+                );
+            }
+            TrayCommand::Quit => std::process::exit(0),
+        }
+        cx.notify();
+    }
+
     pub fn start_ticker(&mut self, cx: &mut Context<Self>) {
+        self.spawn_tray_events(cx);
         cx.spawn(async move |this, cx| {
             loop {
                 cx.background_executor()
@@ -360,19 +454,7 @@ impl AppView {
             }
         }
 
-        // 托盘「打开主窗口」/「设置」
-        if self.runtime.take_show_request() {
-            crate::system::win::show_main_window();
-            let want_settings = self
-                .runtime
-                .shared
-                .lock()
-                .map(|mut guard| std::mem::take(&mut guard.show_settings))
-                .unwrap_or(false);
-            if want_settings {
-                self.open_settings(cx);
-            }
-        }
+        // 托盘命令已改成 channel 即时推送（见 spawn_tray_events），这里不再轮询
     }
 
     fn palette(&self) -> &'static Palette {
