@@ -21,7 +21,12 @@ pub struct SingleInstance {
 impl SingleInstance {
     /// 尝试拿锁。`None` 表示已有实例在跑。
     pub fn acquire() -> Option<Self> {
-        let name: Vec<u16> = OsStr::new(MUTEX_NAME)
+        Self::acquire_named(MUTEX_NAME)
+    }
+
+    /// 用指定名字拿锁。测试要用独立名字，否则会和正在运行的真实实例抢同一个锁。
+    pub fn acquire_named(name: &str) -> Option<Self> {
+        let name: Vec<u16> = OsStr::new(name)
             .encode_wide()
             .chain(std::iter::once(0))
             .collect();
@@ -51,22 +56,30 @@ impl Drop for SingleInstance {
 mod tests {
     use super::*;
 
+    /// 测试用独立名字：生产锁会被正在运行的实例占着，
+    /// 直接用 MUTEX_NAME 会让测试随机失败（取决于本机是否开着程序）。
+    fn test_name(tag: &str) -> String {
+        format!("Local\\bjmf-test-{}-{tag}", std::process::id())
+    }
+
     #[test]
     fn 同一进程内第二次拿不到锁() {
-        let first = SingleInstance::acquire();
+        let name = test_name("second");
+        let first = SingleInstance::acquire_named(&name);
         assert!(first.is_some(), "第一次应该拿到锁");
-        let second = SingleInstance::acquire();
+        let second = SingleInstance::acquire_named(&name);
         assert!(second.is_none(), "已有实例时不应该拿到锁");
         drop(first);
     }
 
     #[test]
     fn 释放后可以再次拿到() {
+        let name = test_name("reacquire");
         {
-            let first = SingleInstance::acquire();
+            let first = SingleInstance::acquire_named(&name);
             assert!(first.is_some());
         }
-        let again = SingleInstance::acquire();
+        let again = SingleInstance::acquire_named(&name);
         assert!(again.is_some(), "释放后应该能重新拿到");
         drop(again);
     }

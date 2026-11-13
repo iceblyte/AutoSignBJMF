@@ -36,6 +36,23 @@ pub fn activate_window_by_title(title: &str) -> bool {
     }
 }
 
+/// 桌面工作区（去掉任务栏的那块）的 (left, top, right, bottom)。
+pub fn work_area() -> (i32, i32, i32, i32) {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{SystemParametersInfoW, SPI_GETWORKAREA};
+    let mut rect: RECT = unsafe { std::mem::zeroed() };
+    let ok = unsafe {
+        SystemParametersInfoW(SPI_GETWORKAREA, 0, &mut rect as *mut RECT as *mut c_void, 0)
+    };
+    if ok == 0 {
+        // 拿不到就退回主屏尺寸
+        use windows_sys::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SM_CXSCREEN, SM_CYSCREEN};
+        let w = unsafe { GetSystemMetrics(SM_CXSCREEN) };
+        let h = unsafe { GetSystemMetrics(SM_CYSCREEN) };
+        return (0, 0, w, h);
+    }
+    (rect.left, rect.top, rect.right, rect.bottom)
+}
+
 /// 读剪贴板里的文本（CF_UNICODETEXT）。
 ///
 /// 输入框需要支持 Ctrl+V —— gpui 的 key_down 只给到按键，不会自动把

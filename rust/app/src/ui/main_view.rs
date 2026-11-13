@@ -349,8 +349,9 @@ impl AppView {
             if self.state.settings.minimize_to_tray {
                 crate::system::win::hide_main_window();
                 self.state.log(LogKind::Info, "窗口已隐藏到托盘，签到继续在后台运行");
-                if !self.close_hint_muted {
-                    self.overlay = Overlay::CloseHint;
+                // 提示必须开独立窗口：主窗口这时候已经隐藏，画在里面等于没提示
+                if !crate::ui::close_hint::is_muted() {
+                    crate::ui::close_hint::open(cx, self.dark);
                 }
             } else {
                 std::process::exit(0);
@@ -586,6 +587,26 @@ impl AppView {
             .open(&path);
     }
 
+    /// 只写渠道开关状态（不改 Key）。
+    fn set_channel(&mut self, field: Field, on: bool) {
+        let index = self.state.selected;
+        if let Some(student) = self.state.config.students.get_mut(index) {
+            if field == Field::Wx {
+                student.wx_on = Some(on);
+            } else {
+                student.qq_on = Some(on);
+            }
+        }
+        let _ = self.state.config.save(self.state.paths.config_file());
+    }
+
+    /// 关闭态点「编辑」：打开渠道并聚焦输入框。
+    fn open_channel(&mut self, field: Field, window: &mut Window, cx: &mut Context<Self>) {
+        self.set_channel(field, true);
+        window.focus(&self.focus[field.index()], cx);
+        cx.notify();
+    }
+
     /// 点通知开关：只切换「渠道是否启用」，输入框跟着显示/隐藏，Key 一律保留。
     fn toggle_notify(&mut self, field: Field, window: &mut Window, cx: &mut Context<Self>) {
         let index = self.state.selected;
@@ -599,14 +620,7 @@ impl AppView {
             !student.qq_enabled()
         };
 
-        if let Some(student) = self.state.config.students.get_mut(index) {
-            if is_wx {
-                student.wx_on = Some(next);
-            } else {
-                student.qq_on = Some(next);
-            }
-        }
-        let _ = self.state.config.save(self.state.paths.config_file());
+        self.set_channel(field, next);
 
         let name = if is_wx { "微信通知" } else { "QQ 通知" };
         if next {
@@ -747,7 +761,7 @@ impl AppView {
 
     // ---------------- 标题栏 ----------------
 
-    fn render_titlebar(&self, p: &Palette) -> AnyElement {
+    fn render_titlebar(&self, p: &Palette, cx: &mut Context<Self>) -> AnyElement {
         let (tone, text) = self.state.title_status();
         let (fg, bg, border) = match tone {
             PillTone::Ok => (p.ok, p.ok_soft, p.ok_line),
@@ -775,7 +789,10 @@ impl AppView {
                     .pl(px(12.0))
                     .pr(px(8.0))
                     .gap(px(8.0))
-                    .window_control_area(WindowControlArea::Drag)
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|_, _, window, _| window.start_window_move()),
+                    )
                     .child(img("logo-64.png").w(px(20.0)).h(px(20.0)))
                     .child(
                         div()
@@ -785,9 +802,9 @@ impl AppView {
                     )
                     .child(pill(text, fg, bg, border, true)),
             )
-            .child(window_button(WindowControlArea::Min, p))
-            .child(window_button(WindowControlArea::Max, p))
-            .child(window_button(WindowControlArea::Close, p))
+            .child(window_button(WindowButton::Min, p, cx))
+            .child(window_button(WindowButton::Max, p, cx))
+            .child(window_button(WindowButton::Close, p, cx))
             .into_any_element()
     }
 
@@ -1333,12 +1350,12 @@ impl AppView {
             // 通知 Key 与签到凭证无关，账号需要重登时也应该能编辑
             self.text_field(Field::Wx, true, false, p, cx)
         } else {
-            closed_channel_hint("已关闭，打开开关后填写", p)
+            closed_channel_hint(Field::Wx, p, cx)
         };
         let qq = if qq_on {
             self.text_field(Field::Qq, true, false, p, cx)
         } else {
-            closed_channel_hint("已关闭，打开开关后填写", p)
+            closed_channel_hint(Field::Qq, p, cx)
         };
 
         let pin = svg()
@@ -2025,16 +2042,33 @@ impl AppView {
 ///
 /// 字形用等宽符号（─ □ ✕）而不是描出来的矢量：这个版本没有 `rotate`，
 /// 10px 下两者观感一致，且符号能跟着主题换色。
-fn window_button(area: WindowControlArea, p: &Palette) -> AnyElement {
-    let danger = area == WindowControlArea::Close;
-    let glyph = match area {
-        WindowControlArea::Min => "─",
-        WindowControlArea::Max => "□",
-        _ => "✕",
+/// 标题栏按钮的三种动作。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WindowButton {
+    Min,
+    Max,
+    Close,
+}
+
+/// 标题栏的最小化 / 最大化 / 关闭。
+///
+/// 之前用 `window_control_area`，那是把命中判定交给系统的 WM_NCHITTEST ——
+/// 鼠标在标题栏移动时系统会不停地问「这点是什么区域」，叠上 hover 重绘就明显卡顿
+/// （设置窗口用的是系统标题栏，所以没事）。改成普通点击 + 显式 API。
+fn window_button(kind: WindowButton, p: &Palette, cx: &mut Context<AppView>) -> AnyElement {
+    let (glyph, danger) = match kind {
+        WindowButton::Min => ("─", false),
+        WindowButton::Max => ("□", false),
+        WindowButton::Close => ("✕", true),
     };
     let hover_fg = if danger { 0xffffff } else { p.text };
 
     div()
+        .id(match kind {
+            WindowButton::Min => "win-min",
+            WindowButton::Max => "win-max",
+            WindowButton::Close => "win-close",
+        })
         .w(px(WINDOW_BTN_W))
         .h_full()
         .flex()
@@ -2042,7 +2076,7 @@ fn window_button(area: WindowControlArea, p: &Palette) -> AnyElement {
         .justify_center()
         .text_size(px(10.0))
         .text_color(rgb(p.text_2))
-        .window_control_area(area)
+        .cursor_pointer()
         .hover(move |style| {
             if danger {
                 style.bg(rgb(p.close_hover)).text_color(rgb(hover_fg))
@@ -2050,6 +2084,16 @@ fn window_button(area: WindowControlArea, p: &Palette) -> AnyElement {
                 style.bg(rgb(p.surface_3)).text_color(rgb(hover_fg))
             }
         })
+        .on_click(cx.listener(move |this, _, window, cx| match kind {
+            WindowButton::Min => window.minimize_window(),
+            WindowButton::Max => window.zoom_window(),
+            WindowButton::Close => {
+                // 关闭 = 交给原来的「最小化到托盘」流程，别直接销毁窗口
+                this.close_signal
+                    .store(true, std::sync::atomic::Ordering::SeqCst);
+                cx.notify();
+            }
+        }))
         .child(glyph)
         .into_any_element()
 }
@@ -2074,20 +2118,50 @@ fn field_block(title: impl Into<SharedString>, input: AnyElement, p: &Palette) -
 
 /// 标签前带开关的输入框列。
 /// 渠道关闭时代替输入框的一行说明，高度与输入框一致，避免两列错位。
-fn closed_channel_hint(text: &'static str, p: &Palette) -> AnyElement {
+/// 渠道关闭时不再画一个「假输入框」，只留一行状态 + 一个编辑按钮。
+/// 点编辑 = 打开该渠道并聚焦输入框。
+fn closed_channel_hint(
+    field: Field,
+    p: &Palette,
+    cx: &mut Context<AppView>,
+) -> AnyElement {
+    let label = if field == Field::Wx { "微信" } else { "QQ" };
     div()
         .h(px(30.0))
         .w_full()
         .flex()
         .items_center()
+        .gap(px(8.0))
         .px(px(10.0))
         .rounded(px(7.0))
         .border_1()
         .border_color(rgb(p.line))
         .bg(rgb(p.surface_2))
-        .text_size(px(11.5))
-        .text_color(rgb(p.text_3))
-        .child(text)
+        .child(
+            div()
+                .flex_1()
+                .text_size(px(11.5))
+                .text_color(rgb(p.text_3))
+                .child(format!("{label}通知已关闭，不发送")),
+        )
+        .child(
+            div()
+                .id(SharedString::from(match field {
+                    Field::Wx => "edit-wx",
+                    _ => "edit-qq",
+                }))
+                .px(px(8.0))
+                .py(px(2.0))
+                .rounded(px(5.0))
+                .text_size(px(11.0))
+                .text_color(rgb(p.accent))
+                .cursor_pointer()
+                .hover(|style| style.bg(rgb(p.surface_3)))
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    this.open_channel(field, window, cx);
+                }))
+                .child("编辑"),
+        )
         .into_any_element()
 }
 
@@ -2418,7 +2492,7 @@ impl Render for AppView {
                     cx.notify();
                 }
             }))
-            .child(self.render_titlebar(p))
+            .child(self.render_titlebar(p, cx))
             .child(
                 div()
                     .flex()
@@ -2430,9 +2504,8 @@ impl Render for AppView {
             );
 
         match self.overlay {
-            // 设置已经改成独立窗口，这里只保留枚举值做兼容
-            Overlay::Settings(_) => {}
-            Overlay::CloseHint => root = root.child(self.render_close_hint(p, cx)),
+            // 设置与「已最小化」提示都改成独立窗口了，这里只保留枚举值做兼容
+            Overlay::Settings(_) | Overlay::CloseHint => {}
             Overlay::Qr => root = root.child(crate::ui::qr_modal::render(self, p, cx)),
             Overlay::TimePicker => root = root.child(crate::ui::time_picker::render(self, p, cx)),
             Overlay::None => {}
@@ -2467,64 +2540,4 @@ impl Render for AppView {
 }
 
 impl AppView {
-    fn render_close_hint(&self, p: &Palette, cx: &mut Context<Self>) -> AnyElement {
-        div()
-            .absolute()
-            .bottom(px(14.0))
-            .right(px(14.0))
-            .w(px(300.0))
-            .p(px(11.0))
-            .flex()
-            .gap(px(9.0))
-            .rounded(px(10.0))
-            .bg(rgb(p.surface))
-            .border_1()
-            .border_color(rgb(p.line))
-            .child(img("logo-64.png").w(px(18.0)).h(px(18.0)).mt(px(1.0)))
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .flex_1()
-                    .child(
-                        div()
-                            .text_size(px(12.0))
-                            .text_color(rgb(p.text))
-                            .child("已最小化到托盘"),
-                    )
-                    .child(
-                        div()
-                            .mt(px(3.0))
-                            .text_size(px(11.5))
-                            .text_color(rgb(p.text_3))
-                            .child("定时签到仍在后台运行。要退出请右键托盘图标。"),
-                    )
-                    .child(
-                        div()
-                            .mt(px(9.0))
-                            .flex()
-                            .gap(px(6.0))
-                            .child(
-                                button("打开主窗口", BtnKind::Primary, BtnSize::Xs, false, p)
-                                    .id("hint-open")
-                                    .cursor_pointer()
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        this.overlay = Overlay::None;
-                                        cx.notify();
-                                    })),
-                            )
-                            .child(
-                                button("不再提示", BtnKind::Default, BtnSize::Xs, false, p)
-                                    .id("hint-mute")
-                                    .cursor_pointer()
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        this.close_hint_muted = true;
-                                        this.overlay = Overlay::None;
-                                        cx.notify();
-                                    })),
-                            ),
-                    ),
-            )
-            .into_any_element()
-    }
 }
