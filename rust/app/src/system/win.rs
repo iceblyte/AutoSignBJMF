@@ -7,7 +7,7 @@ use std::ffi::c_void;
 
 use windows_sys::Win32::Foundation::RECT;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    EnumWindows, FindWindowW, GetWindow, GetWindowRect, GetWindowThreadProcessId, IsZoomed, MessageBoxW, SetForegroundWindow, ShowWindow, ShowWindowAsync, GW_OWNER,
+    EnumWindows, FindWindowW, GetWindow, GetWindowRect, GetWindowThreadProcessId, IsWindow, IsWindowVisible, IsZoomed, MessageBoxW, SetForegroundWindow, ShowWindow, ShowWindowAsync, GW_OWNER,
     MB_ICONINFORMATION, MB_OK, SW_HIDE, SW_RESTORE, SW_SHOW, SW_SHOWMAXIMIZED,
 };
 
@@ -33,6 +33,46 @@ pub fn activate_window_by_title(title: &str) -> bool {
         ShowWindow(hwnd, SW_RESTORE);
         SetForegroundWindow(hwnd);
         true
+    }
+}
+
+/// 读剪贴板里的文本（CF_UNICODETEXT）。
+///
+/// 输入框需要支持 Ctrl+V —— gpui 的 key_down 只给到按键，不会自动把
+/// 剪贴板内容塞进来，得自己读。
+pub fn clipboard_text() -> Option<String> {
+    use windows_sys::Win32::Foundation::HGLOBAL;
+    use windows_sys::Win32::System::DataExchange::{
+        CloseClipboard, GetClipboardData, IsClipboardFormatAvailable, OpenClipboard,
+    };
+    use windows_sys::Win32::System::Memory::{GlobalLock, GlobalUnlock};
+    use windows_sys::Win32::System::Ole::CF_UNICODETEXT;
+
+    unsafe {
+        if IsClipboardFormatAvailable(CF_UNICODETEXT as u32) == 0 {
+            return None;
+        }
+        if OpenClipboard(std::ptr::null_mut()) == 0 {
+            return None;
+        }
+        let handle = GetClipboardData(CF_UNICODETEXT as u32);
+        if handle.is_null() {
+            CloseClipboard();
+            return None;
+        }
+        let ptr = GlobalLock(handle as HGLOBAL) as *const u16;
+        if ptr.is_null() {
+            CloseClipboard();
+            return None;
+        }
+        let mut len = 0usize;
+        while *ptr.add(len) != 0 {
+            len += 1;
+        }
+        let slice = std::slice::from_raw_parts(ptr, len);
+        GlobalUnlock(handle as HGLOBAL);
+        CloseClipboard();
+        Some(String::from_utf16_lossy(slice))
     }
 }
 
@@ -80,13 +120,9 @@ unsafe extern "system" fn visit(hwnd: *mut c_void, lparam: isize) -> i32 {
         let search = &mut *(lparam as *mut Search);
         let mut owner = 0u32;
         GetWindowThreadProcessId(hwnd, &mut owner);
-        if owner != search.pid {
+        if owner != search.pid || IsWindowVisible(hwnd) == 0 {
             return 1;
         }
-        // 注意：这里**不能**过滤 IsWindowVisible。
-        // 最小化到托盘时窗口被 SW_HIDE，一旦跳过不可见窗口，
-        // main_window() 就再也找不到句柄，hide 之后 show 不回来
-        // （表现出来就是「托盘双击/菜单都打不开窗口」）。
         if GetWindow(hwnd, GW_OWNER) != std::ptr::null_mut() {
             return 1; // 有 owner 的是附属窗口，不是主窗口
         }
@@ -105,8 +141,28 @@ unsafe extern "system" fn visit(hwnd: *mut c_void, lparam: isize) -> i32 {
     1
 }
 
-/// 找到当前进程的主窗口句柄。
+/// 主窗口句柄缓存。
+///
+/// 关键点：窗口被 `SW_HIDE` 之后 `IsWindowVisible` 为假、枚举不到，
+/// 但句柄本身仍然有效。所以要把它记下来 —— 否则 hide 之后既 show 不回来，
+/// 连「关闭按钮」也会失灵（关闭 = 隐藏，隐藏失败看起来就是关不掉）。
+fn cache() -> &'static std::sync::Mutex<Option<isize>> {
+    static CACHE: std::sync::OnceLock<std::sync::Mutex<Option<isize>>> =
+        std::sync::OnceLock::new();
+    CACHE.get_or_init(|| std::sync::Mutex::new(None))
+}
+
+/// 找到当前进程的主窗口句柄：先看缓存，失效了再枚举可见窗口。
 pub fn main_window() -> Option<*mut c_void> {
+    if let Ok(guard) = cache().lock() {
+        if let Some(raw) = *guard {
+            let hwnd = raw as *mut c_void;
+            if unsafe { IsWindow(hwnd) } != 0 {
+                return Some(hwnd);
+            }
+        }
+    }
+
     let mut search = Search {
         pid: std::process::id(),
         best: None,
@@ -114,7 +170,13 @@ pub fn main_window() -> Option<*mut c_void> {
     unsafe {
         EnumWindows(Some(visit), &mut search as *mut Search as isize);
     }
-    search.best.map(|(_, hwnd)| hwnd)
+    let found = search.best.map(|(_, hwnd)| hwnd);
+    if let Some(hwnd) = found {
+        if let Ok(mut guard) = cache().lock() {
+            *guard = Some(hwnd as isize);
+        }
+    }
+    found
 }
 
 /// 隐藏主窗口（等价于「最小化到托盘」）。

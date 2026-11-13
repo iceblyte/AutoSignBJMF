@@ -112,7 +112,13 @@ impl<'a, L: FnMut(&str)> Runner<'a, L> {
         }
 
         // 汇总通知：取第一个非空 WXKey（与 Python 相同）
-        let wx_key = first_wx_key(config.students.iter().map(|s| s.wx_key.as_str()));
+        let wx_key = first_wx_key(
+            config
+                .students
+                .iter()
+                .filter(|student| student.wx_enabled())
+                .map(|student| student.wx_key.as_str()),
+        );
         match wx_key {
             Some(key) if !report.outcomes.is_empty() => {
                 match self.notifier.send_summary(key, &report.outcomes) {
@@ -121,7 +127,27 @@ impl<'a, L: FnMut(&str)> Runner<'a, L> {
                     Err(error) => (self.log)(&format!("微信汇总通知发送失败：{error}")),
                 }
             }
-            _ => (self.log)("未配置 WXKey，跳过汇总通知"),
+            _ => (self.log)("未配置 WXKey 或微信通知已关闭，跳过微信汇总"),
+        }
+
+        // QQ 通知（Qmsg 酱）：之前这里根本没调用过，等于 QQ 渠道从未生效
+        let qq_key = first_wx_key(
+            config
+                .students
+                .iter()
+                .filter(|student| student.qq_enabled())
+                .map(|student| student.qmsg_key.as_str()),
+        );
+        match qq_key {
+            Some(key) if !report.outcomes.is_empty() => {
+                let message = crate::notify::summary_message(&report.outcomes);
+                match self.notifier.send_qq(key, &message) {
+                    Ok(true) => report.notified = true,
+                    Ok(false) => (self.log)("QQ 汇总通知未发送（Key 为空）"),
+                    Err(error) => (self.log)(&format!("QQ 汇总通知发送失败：{error}")),
+                }
+            }
+            _ => (self.log)("未配置 QmsgKEY 或 QQ 通知已关闭，跳过 QQ 汇总"),
         }
 
         report

@@ -113,6 +113,8 @@ pub struct AppView {
     pub picker_minute: u32,
     /// 当前展开的下拉（重试次数 / 重试间隔 / 时 / 分）
     pub open_select: OpenSelect,
+    /// 设置窗口的句柄：有了它就说明设置已经开着（同一时刻只允许一个）。
+    pub settings_window: Option<WindowId>,
     /// 展开中的下拉浮层的左上角（窗口坐标）。
     ///
     /// 列表必须画在根层：主界面 body 和弹窗都是 overflow_hidden，
@@ -144,8 +146,8 @@ impl AppView {
         // 截图/QA：AUTOSIGN_OPEN=settings|data|qr|time 直接打开对应覆盖层
         if let Ok(value) = std::env::var("AUTOSIGN_OPEN") {
             overlay = match value.as_str() {
-                "settings" => Overlay::Settings(SettingsTab::General),
-                "data" => Overlay::Settings(SettingsTab::Data),
+                "settings" => Overlay::None,
+                "data" => Overlay::None,
                 "qr" => Overlay::Qr,
                 "time" => Overlay::TimePicker,
                 _ => Overlay::None,
@@ -166,6 +168,25 @@ impl AppView {
                         view.import_config(cx);
                     }
                 });
+            })
+            .detach();
+        }
+
+        // QA 回归用：AUTOSIGN_TEST_HIDE=1 先隐藏窗口、3 秒后再唤回，
+        // 用来验证「最小化到托盘后还能不能找回来 / 关闭是否真的生效」。
+        if std::env::var("AUTOSIGN_TEST_HIDE").is_ok() {
+            cx.spawn(async move |this, cx| {
+                cx.background_executor()
+                    .timer(std::time::Duration::from_secs(3))
+                    .await;
+                crate::system::win::hide_main_window();
+                eprintln!("QA: hidden");
+                cx.background_executor()
+                    .timer(std::time::Duration::from_secs(3))
+                    .await;
+                crate::system::win::show_main_window();
+                eprintln!("QA: shown");
+                let _ = this.update(cx, |_, cx| cx.notify());
             })
             .detach();
         }
@@ -216,6 +237,7 @@ impl AppView {
             picker_minute,
             open_select: OpenSelect::None,
             dropdown_at: None,
+            settings_window: None,
             log_scroll: ScrollHandle::new(),
             focus,
             close_hint_muted: false,
@@ -237,6 +259,16 @@ impl AppView {
                 view.dropdown_at = Some((selected, px(430.0), px(430.0)));
             }
         }
+        // QA：等实体构造完成再开设置窗口，否则会撞上「entity 正在被更新」
+        if let Ok(open) = std::env::var("AUTOSIGN_OPEN") {
+            let want_data = open == "data";
+            if open == "settings" || want_data {
+                if want_data {
+                    view.settings_tab = SettingsTab::Data;
+                }
+                view.open_settings(cx);
+            }
+        }
         view
     }
 
@@ -249,7 +281,7 @@ impl AppView {
                     .await;
                 if this
                     .update(cx, |view, cx| {
-                        view.tick();
+                        view.tick(cx);
                         cx.notify();
                     })
                     .is_err()
@@ -262,7 +294,7 @@ impl AppView {
     }
 
     /// 同步一次后台状态。
-    pub fn tick(&mut self) {
+    pub fn tick(&mut self, cx: &mut Context<Self>) {
         let (running, paused, next, last_exit) = self.runtime.snapshot();
         self.state.running = running;
         self.state.paused = paused;
@@ -304,11 +336,9 @@ impl AppView {
                 .lock()
                 .map(|mut guard| std::mem::take(&mut guard.show_settings))
                 .unwrap_or(false);
-            self.overlay = if want_settings {
-                Overlay::Settings(SettingsTab::General)
-            } else {
-                Overlay::None
-            };
+            if want_settings {
+                self.open_settings(cx);
+            }
         }
     }
 
@@ -355,6 +385,33 @@ impl AppView {
     fn on_key(&mut self, field: Field, event: &KeyDownEvent, cx: &mut Context<Self>) {
         let key = event.keystroke.key.as_str();
         let mut value = self.value_of(field);
+
+        // Ctrl+V 粘贴：gpui 只给按键，剪贴板要自己读
+        if event.keystroke.modifiers.control {
+            match key {
+                "v" => {
+                    if let Some(text) = crate::system::win::clipboard_text() {
+                        // 单行输入框：换行与制表符直接去掉
+                        let cleaned: String = text
+                            .chars()
+                            .filter(|c| *c != '\r' && *c != '\n' && *c != '\t')
+                            .collect();
+                        value.push_str(&cleaned);
+                        self.set_value(field, value);
+                    }
+                    cx.notify();
+                    return;
+                }
+                "a" => {
+                    // 全选后再输入即替换：这里退化成清空，符合单行输入框的直觉
+                    self.set_value(field, String::new());
+                    cx.notify();
+                    return;
+                }
+                _ => {}
+            }
+        }
+
         match key {
             "backspace" => {
                 value.pop();
@@ -402,6 +459,64 @@ impl AppView {
         self.qr_image = None;
         self.state.log(LogKind::Info, "正在获取登录二维码…");
         self.qr = Some(crate::ui::qr_modal::start(self.state.paths.config_file()));
+        cx.notify();
+    }
+
+    /// 打开设置窗口（独立窗口：可拖动、可最小化，不再挤在主界面里当覆盖层）。
+    ///
+    /// 开窗必须放到事件回调之外：`open_window` 会立刻渲染这个 View，
+    /// 而此时 entity 正在被 update —— 直接调用会 panic（already being updated）。
+    /// 所以统一走「spawn 一次 + AsyncApp::update」，在借用释放后再开窗。
+    pub fn open_settings(&mut self, cx: &mut Context<Self>) {
+        if let Some(id) = self.settings_window {
+            if let Some(handle) = cx
+                .windows()
+                .into_iter()
+                .find(|handle| handle.window_id() == id)
+            {
+                let _ = handle.update(cx, |_, window, _| window.activate_window());
+                return;
+            }
+            self.settings_window = None;
+        }
+
+        let options = WindowOptions {
+            window_bounds: Some(WindowBounds::Windowed(Bounds {
+                origin: point(px(260.0), px(180.0)),
+                size: size(px(860.0), px(560.0)),
+            })),
+            titlebar: Some(TitlebarOptions {
+                title: Some("设置".into()),
+                appears_transparent: false,
+                traffic_light_position: None,
+            }),
+            window_min_size: Some(size(px(720.0), px(460.0))),
+            ..Default::default()
+        };
+
+        cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(std::time::Duration::from_millis(1))
+                .await;
+            let Some(entity) = this.upgrade() else {
+                return;
+            };
+            let opened = cx.update(|app| app.open_window(options, move |_, _| entity.clone()));
+            if let Ok(handle) = opened {
+                let id = handle.window_id();
+                let _ = this.update(cx, |view, cx| {
+                    view.settings_window = Some(id);
+                    cx.notify();
+                });
+            }
+        })
+        .detach();
+    }
+
+    /// 关闭设置窗口（设置页里的「完成」与标题栏 ✕ 都走这里）。
+    pub fn close_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.settings_window = None;
+        window.remove_window();
         cx.notify();
     }
 
@@ -749,7 +864,7 @@ impl AppView {
                             .gap(px(5.0))
                             // 扫码是唯一能拿到凭证的方式；手动只建条目，之后仍要扫码
                             .child(
-                                button("＋ 扫码", BtnKind::Default, BtnSize::Xs, false, p)
+                                button("＋ 添加账号", BtnKind::Default, BtnSize::Xs, false, p)
                                     .id("add-account")
                                     .cursor_pointer()
                                     .on_click(cx.listener(|this, _, window, cx| {
@@ -956,7 +1071,7 @@ impl AppView {
                             .child("设置")
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.settings_tab = SettingsTab::General;
-                                this.overlay = Overlay::Settings(SettingsTab::General);
+                                this.open_settings(cx);
                                 cx.notify();
                             })),
                     ),
@@ -2123,6 +2238,8 @@ pub fn dropdown_list(
         .border_1()
         .border_color(rgb(p.line_2))
         .bg(rgb(p.surface))
+        // 选中态是实底，不裁剪的话会盖住圆角
+        .overflow_hidden()
         .p(px(4.0))
         .child(row)
         .into_any_element()
@@ -2253,8 +2370,14 @@ fn set_clipboard_text(text: &str) -> std::io::Result<()> {
 }
 
 impl Render for AppView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let p = self.palette();
+
+        // 同一个 entity 在两个窗口里渲染：靠窗口句柄区分画主界面还是设置页
+        if self.settings_window == Some(window.window_handle().window_id()) {
+            return crate::ui::settings::render(self, p, cx);
+        }
+
         let mut root = div()
             .v_flex()
             .size_full()
@@ -2280,9 +2403,10 @@ impl Render for AppView {
             );
 
         match self.overlay {
+            // 设置已经改成独立窗口，这里只保留枚举值做兼容
+            Overlay::Settings(_) => {}
             Overlay::CloseHint => root = root.child(self.render_close_hint(p, cx)),
             Overlay::Qr => root = root.child(crate::ui::qr_modal::render(self, p, cx)),
-            Overlay::Settings(_) => root = root.child(crate::ui::settings::render(self, p, cx)),
             Overlay::TimePicker => root = root.child(crate::ui::time_picker::render(self, p, cx)),
             Overlay::None => {}
         }
@@ -2311,7 +2435,7 @@ impl Render for AppView {
                         .child(dropdown_overlay(kind, self, p, cx)),
                 );
         }
-        root
+        root.into_any_element()
     }
 }
 

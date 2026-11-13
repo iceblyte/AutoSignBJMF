@@ -30,7 +30,14 @@ pub const WINDOW_TITLE: &str = "班级魔方自动签到";
 fn main() {
     // 单实例：已经有窗口在跑就把它叫到前面，然后退出（不重复签到）。
     // 注意这里是 GUI 子系统，println/eprintln 看不到，所以用窗口激活 + MessageBox 兜底。
-    let Some(_guard) = system::singleton::SingleInstance::acquire() else {
+    // QA/自动化场景允许跳过单实例检查，避免和用户正在运行的实例抢锁
+    let skip_single = std::env::var_os("AUTOSIGN_NO_SINGLE").is_some();
+    let _guard = if skip_single {
+        None
+    } else {
+        Some(system::singleton::SingleInstance::acquire())
+    };
+    if !skip_single && _guard.as_ref().map(|guard| guard.is_none()).unwrap_or(false) {
         #[cfg(debug_assertions)]
         eprintln!("{WINDOW_TITLE} 已经在运行，请从托盘图标打开。");
         if !system::win::activate_window_by_title(WINDOW_TITLE) {
@@ -41,7 +48,7 @@ fn main() {
             );
         }
         return;
-    };
+    }
 
     let paths = Paths::for_current_process();
     let _ = paths.ensure();

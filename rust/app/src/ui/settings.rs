@@ -5,7 +5,7 @@
 
 use gpui_kit::base::StyledExt;
 use gpui_kit::prelude::*;
-use gpui_kit::{div, img, px, rgba, rgb, svg, AnyElement, Context, Div};
+use gpui_kit::{div, px, rgb, svg, AnyElement, Context, Div};
 
 use crate::theme::*;
 use crate::ui::main_view::{AppView, Overlay, SettingsTab};
@@ -97,74 +97,14 @@ pub fn render(view: &mut AppView, p: &Palette, cx: &mut Context<AppView>) -> Any
                 ),
         );
 
+    // 独立窗口：铺满整窗，不再画遮罩与自绘标题栏
+    // （自绘标题栏挡不住拖动，圆角在系统窗口里也多余）
     div()
-        .absolute()
-        .inset_0()
+        .size_full()
         .flex()
-        .items_center()
-        .justify_center()
-        .bg(rgba(0x0f121675))
-        .child(
-            div()
-                .w(px(SETTINGS_W))
-                .h(px(SETTINGS_H))
-                .flex()
-                .flex_col()
-                .rounded(px(10.0))
-                .bg(rgb(p.surface))
-                .border_1()
-                .border_color(rgb(p.line_2))
-                .overflow_hidden()
-                .child(
-                    div()
-                        .h(px(TITLEBAR_H))
-                        .flex_none()
-                        .flex()
-                        .items_center()
-                        .gap(px(8.0))
-                        .pl(px(12.0))
-                        .bg(rgb(p.surface_2))
-                        .border_b_1()
-                        .border_color(rgb(p.line))
-                        .child(img("logo-64.png").w(px(16.0)).h(px(16.0)))
-                        .child(
-                            div()
-                                .text_size(px(12.0))
-                                .text_color(rgb(p.text_2))
-                                .child("设置"),
-                        )
-                        .child(div().flex_1())
-                        .child(
-                            div()
-                                .id("settings-close")
-                                .w(px(46.0))
-                                .h_full()
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .text_size(px(10.0))
-                                .text_color(rgb(p.text_2))
-                                .cursor_pointer()
-                                .hover(move |style| {
-                                    style.bg(rgb(p.close_hover)).text_color(rgb(0xffffff))
-                                })
-                                .on_click(cx.listener(|view, _, _, cx| {
-                                    view.overlay = Overlay::None;
-                                    cx.notify();
-                                }))
-                                .child("✕"),
-                        ),
-                )
-                .child(
-                    div()
-                        .flex()
-                        .flex_1()
-                        .min_h_0()
-                        .w_full()
-                        .child(nav)
-                        .child(body),
-                ),
-        )
+        .bg(rgb(p.surface))
+        .child(nav)
+        .child(body)
         .into_any_element()
 }
 
@@ -350,9 +290,8 @@ fn general(view: &mut AppView, p: &Palette, cx: &mut Context<AppView>) -> AnyEle
                     button("完成", BtnKind::Primary, BtnSize::Small, false, p)
                         .id("settings-done")
                         .cursor_pointer()
-                        .on_click(cx.listener(|view, _, _, cx| {
-                            view.overlay = Overlay::None;
-                            cx.notify();
+                        .on_click(cx.listener(|view, _, window, cx| {
+                            view.close_settings(window, cx);
                         })),
                 ),
         )
@@ -450,9 +389,8 @@ fn data(view: &mut AppView, p: &Palette, cx: &mut Context<AppView>) -> AnyElemen
                     button("完成", BtnKind::Primary, BtnSize::Small, false, p)
                         .id("settings-done-data")
                         .cursor_pointer()
-                        .on_click(cx.listener(|view, _, _, cx| {
-                            view.overlay = Overlay::None;
-                            cx.notify();
+                        .on_click(cx.listener(|view, _, window, cx| {
+                            view.close_settings(window, cx);
                         })),
                 ),
         )
