@@ -244,7 +244,7 @@ pub fn render(view: &mut AppView, p: &Palette, cx: &mut Context<AppView>) -> Any
                         .py(px(13.0))
                         .border_b_1()
                         .border_color(rgb(p.line))
-                        .child(img("logo.png").w(px(16.0)).h(px(16.0)))
+                        .child(img("logo-64.png").w(px(16.0)).h(px(16.0)))
                         .child(
                             div()
                                 .text_size(px(13.0))

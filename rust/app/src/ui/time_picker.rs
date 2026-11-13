@@ -6,10 +6,10 @@
 use chrono::Timelike;
 use gpui_kit::base::StyledExt;
 use gpui_kit::prelude::*;
-use gpui_kit::{div, px, rgba, rgb, AnyElement, Context, SharedString};
+use gpui_kit::{div, px, rgba, rgb, AnyElement, ClickEvent, Context, SharedString};
 
 use crate::theme::*;
-use crate::ui::main_view::{dropdown_list, AppView, OpenSelect, Overlay};
+use crate::ui::main_view::{AppView, OpenSelect, Overlay};
 use crate::ui::widgets::{button, choice_chip, BtnKind, BtnSize};
 
 const PANEL_W: f32 = 420.0;
@@ -87,12 +87,15 @@ fn dropdown(
         )
         .cursor_pointer()
         .hover(|style| style.border_color(rgb(p.text_3)))
-        .on_click(cx.listener(move |this, _, _, cx| {
-            this.open_select = if this.open_select == target {
-                OpenSelect::None
+        .on_click(cx.listener(move |this, event: &ClickEvent, _, cx| {
+            if this.open_select == target {
+                this.open_select = OpenSelect::None;
+                this.dropdown_at = None;
             } else {
-                target
-            };
+                this.open_select = target;
+                let pos = event.position();
+                this.dropdown_at = Some((target, pos.x, pos.y));
+            }
             cx.notify();
         }))
         .into_any_element()
@@ -186,45 +189,6 @@ pub fn render(view: &mut AppView, p: &Palette, cx: &mut Context<AppView>) -> Any
                         .child("5 分钟一档"),
                 ),
         );
-
-    // ---- 展开的小时列表：一列 24 项，超出滚动 ----
-    if open_hour {
-        picker_block = picker_block.child(dropdown_list(
-            (0..24u32)
-                .map(|h| (format!("{h:02} 时"), h == hour))
-                .collect(),
-            176.0,
-            2,
-            "pick-hour",
-            p,
-            cx,
-            move |this, index| {
-                this.picker_hour = index as u32;
-                this.open_select = OpenSelect::None;
-            },
-        ));
-    }
-
-    // ---- 展开的分钟列表：5 分钟一档，一列 12 项 ----
-    if open_minute {
-        picker_block = picker_block.child(dropdown_list(
-            (0..(60 / MINUTE_STEP))
-                .map(|index| {
-                    let m = index * MINUTE_STEP;
-                    (format!("{m:02} 分"), m == minute)
-                })
-                .collect(),
-            176.0,
-            2,
-            "pick-minute",
-            p,
-            cx,
-            move |this, index| {
-                this.picker_minute = index as u32 * MINUTE_STEP;
-                this.open_select = OpenSelect::None;
-            },
-        ));
-    }
 
     let conflict = view
         .state

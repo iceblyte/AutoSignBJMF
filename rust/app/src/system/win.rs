@@ -7,9 +7,8 @@ use std::ffi::c_void;
 
 use windows_sys::Win32::Foundation::RECT;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    EnumWindows, FindWindowW, GetWindowRect, GetWindowThreadProcessId, IsWindowVisible, IsZoomed,
-    MessageBoxW, SetForegroundWindow, ShowWindow, ShowWindowAsync, MB_ICONINFORMATION, MB_OK,
-    SW_HIDE, SW_RESTORE, SW_SHOW, SW_SHOWMAXIMIZED,
+    EnumWindows, FindWindowW, GetWindow, GetWindowRect, GetWindowThreadProcessId, IsZoomed, MessageBoxW, SetForegroundWindow, ShowWindow, ShowWindowAsync, GW_OWNER,
+    MB_ICONINFORMATION, MB_OK, SW_HIDE, SW_RESTORE, SW_SHOW, SW_SHOWMAXIMIZED,
 };
 
 /// 转成 Windows 需要的以 0 结尾的 UTF-16。
@@ -81,14 +80,24 @@ unsafe extern "system" fn visit(hwnd: *mut c_void, lparam: isize) -> i32 {
         let search = &mut *(lparam as *mut Search);
         let mut owner = 0u32;
         GetWindowThreadProcessId(hwnd, &mut owner);
-        if owner != search.pid || IsWindowVisible(hwnd) == 0 {
+        if owner != search.pid {
             return 1;
+        }
+        // 注意：这里**不能**过滤 IsWindowVisible。
+        // 最小化到托盘时窗口被 SW_HIDE，一旦跳过不可见窗口，
+        // main_window() 就再也找不到句柄，hide 之后 show 不回来
+        // （表现出来就是「托盘双击/菜单都打不开窗口」）。
+        if GetWindow(hwnd, GW_OWNER) != std::ptr::null_mut() {
+            return 1; // 有 owner 的是附属窗口，不是主窗口
         }
         let mut rect: RECT = std::mem::zeroed();
         if GetWindowRect(hwnd, &mut rect) == 0 {
             return 1;
         }
         let area = (rect.right - rect.left) * (rect.bottom - rect.top);
+        if area < 200 * 200 {
+            return 1; // 消息窗口之类的尺寸很小
+        }
         if search.best.map(|(best, _)| area > best).unwrap_or(true) {
             search.best = Some((area, hwnd));
         }

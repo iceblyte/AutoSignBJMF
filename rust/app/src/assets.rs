@@ -29,6 +29,8 @@ pub fn put_image(bytes: Vec<u8>) -> String {
 /// 资源清单：路径 → 字节。
 const FILES: &[(&str, &[u8])] = &[
     ("logo.png", include_bytes!("../assets/logo.png")),
+    // 预缩到 64×64 的版本：界面里只显示 16–24px，用原图缩 30 倍会糊
+    ("logo-64.png", include_bytes!("../assets/logo-64.png")),
     ("icons/pin.svg", include_bytes!("../assets/icons/pin.svg")),
     ("icons/gear.svg", include_bytes!("../assets/icons/gear.svg")),
     ("icons/bell.svg", include_bytes!("../assets/icons/bell.svg")),

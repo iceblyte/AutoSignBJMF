@@ -55,8 +55,8 @@ pub fn render(view: &mut AppView, p: &Palette, cx: &mut Context<AppView>) -> Any
             .child(
                 svg()
                     .path(icon)
-                    .w(px(13.0))
-                    .h(px(13.0))
+                    .w(px(14.0))
+                    .h(px(14.0))
                     .text_color(rgb(if active { 0xffffff } else { p.text_3 })),
             )
             .child(
@@ -126,7 +126,7 @@ pub fn render(view: &mut AppView, p: &Palette, cx: &mut Context<AppView>) -> Any
                         .bg(rgb(p.surface_2))
                         .border_b_1()
                         .border_color(rgb(p.line))
-                        .child(img("logo.png").w(px(16.0)).h(px(16.0)))
+                        .child(img("logo-64.png").w(px(16.0)).h(px(16.0)))
                         .child(
                             div()
                                 .text_size(px(12.0))

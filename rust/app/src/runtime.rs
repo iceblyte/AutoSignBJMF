@@ -30,6 +30,8 @@ pub struct Shared {
     pub pending: Vec<(LogKind, String)>,
     /// 托盘请求把主窗口提到前台
     pub show_requested: bool,
+    /// 托盘「设置」：提窗口的同时切到设置页
+    pub show_settings: bool,
 }
 
 pub type SharedHandle = Arc<Mutex<Shared>>;
@@ -39,6 +41,8 @@ pub struct Runtime {
     pub shared: SharedHandle,
     stop: Arc<AtomicBool>,
     paused: Arc<AtomicBool>,
+    /// 被单独暂停的账号下标（界面上按账号暂停）
+    paused_accounts: Arc<Mutex<std::collections::BTreeSet<usize>>>,
     run_now: Arc<AtomicBool>,
     pub tray: Option<crate::system::tray::TrayHandle>,
 }
@@ -55,6 +59,7 @@ impl Runtime {
         let stop = Arc::new(AtomicBool::new(false));
         let paused = Arc::new(AtomicBool::new(false));
         let run_now = Arc::new(AtomicBool::new(false));
+        let paused_accounts = Arc::new(Mutex::new(std::collections::BTreeSet::new()));
 
         // ---- 调度线程 ----
         {
@@ -62,6 +67,7 @@ impl Runtime {
             let stop = stop.clone();
             let paused = paused.clone();
             let run_now = run_now.clone();
+            let paused_accounts = paused_accounts.clone();
             let config_path = config_path.clone();
             let settings_path = settings_path.clone();
             std::thread::Builder::new()
@@ -85,53 +91,28 @@ impl Runtime {
                     let settings = Settings::load(&settings_path);
                     let times_for_run = parse_time_list(&settings.times).unwrap_or_default();
 
+                    // site / notifier 用 Arc 共享：hooks.run 与「立即签到」都要用
+                    let site = Arc::new(site);
+                    let notifier = Arc::new(notifier);
+
                     let mut scheduler = Scheduler::new(Hooks {
                         run: {
                             let shared = shared.clone();
+                            let site = site.clone();
+                            let notifier = notifier.clone();
                             let config_path = config_path.clone();
+                            let paused = paused.clone();
+                            let paused_accounts = paused_accounts.clone();
                             move || {
-                                push(&shared, LogKind::Info, "开始执行一轮签到");
-                                let mut lines = Vec::new();
-                                let report = {
-                                    let mut runner = Runner::new(
-                                        &site,
-                                        &notifier,
-                                        &config_path,
-                                        |line: &str| lines.push(line.to_string()),
-                                    );
-                                    runner.run_once()
-                                };
-                                for line in lines {
-                                    push(&shared, LogKind::Info, line);
+                                if paused.load(Ordering::Relaxed) {
+                                    push(&shared, LogKind::Info, "已暂停全部，跳过本次执行");
+                                    return 0;
                                 }
-                                for outcome in &report.outcomes {
-                                    let kind = match outcome.status {
-                                        bjmf_core::SignStatus::Success
-                                        | bjmf_core::SignStatus::AlreadySigned => LogKind::Ok,
-                                        bjmf_core::SignStatus::Error
-                                        | bjmf_core::SignStatus::Skip => LogKind::Bad,
-                                        _ => LogKind::Info,
-                                    };
-                                    push(
-                                        &shared,
-                                        kind,
-                                        format!("{}：{}", outcome.name, outcome.detail),
-                                    );
-                                }
-                                let code = report.exit_code();
-                                if let Ok(mut guard) = shared.lock() {
-                                    guard.last_exit = Some(code);
-                                }
-                                push(
-                                    &shared,
-                                    if code == 0 { LogKind::Ok } else { LogKind::Bad },
-                                    if code == 0 {
-                                        "本轮执行完成".to_string()
-                                    } else {
-                                        "本轮执行失败，可按 Ctrl+Enter 重试".to_string()
-                                    },
-                                );
-                                code
+                                let skip = paused_accounts
+                                    .lock()
+                                    .map(|guard| guard.clone())
+                                    .unwrap_or_default();
+                                execute_round(&shared, &site, &notifier, &config_path, &skip)
                             }
                         },
                         times: {
@@ -146,6 +127,11 @@ impl Runtime {
                         wait: {
                             let stop = stop.clone();
                             let run_now = run_now.clone();
+                            let shared = shared.clone();
+                            let site = site.clone();
+                            let notifier = notifier.clone();
+                            let config_path = config_path.clone();
+                            let paused_accounts = paused_accounts.clone();
                             move |duration: Duration| {
                                 // 切片等待：每秒检查一次停止标志，别让它睡死
                                 let total = duration.as_millis() as u64;
@@ -157,9 +143,21 @@ impl Runtime {
                                     let slice = std::cmp::min(1000, total - waited);
                                     std::thread::sleep(Duration::from_millis(slice));
                                     waited += slice;
-                                    // 立即签到：不中断等待，只是让主循环尽快响应
+                                    // 「立即签到」：在这里就地跑一轮。
+                                    // 原来只是把标志 swap 掉什么也不做，所以点了没反应。
                                     if run_now.swap(false, Ordering::SeqCst) {
-                                        // 由界面直接触发，这里不做事
+                                        push(&shared, LogKind::Info, "收到「立即签到」请求");
+                                        let skip = paused_accounts
+                                            .lock()
+                                            .map(|guard| guard.clone())
+                                            .unwrap_or_default();
+                                        execute_round(
+                                            &shared,
+                                            &site,
+                                            &notifier,
+                                            &config_path,
+                                            &skip,
+                                        );
                                     }
                                 }
                                 !stop.load(Ordering::Relaxed)
@@ -253,6 +251,7 @@ impl Runtime {
             shared,
             stop,
             paused,
+            paused_accounts,
             run_now,
             tray,
         }
@@ -267,6 +266,33 @@ impl Runtime {
 
     pub fn is_paused(&self) -> bool {
         self.paused.load(Ordering::SeqCst)
+    }
+
+    /// 单独暂停 / 恢复某个账号。
+    pub fn set_account_paused(&self, index: usize, paused: bool) {
+        if let Ok(mut guard) = self.paused_accounts.lock() {
+            if paused {
+                guard.insert(index);
+            } else {
+                guard.remove(&index);
+            }
+        }
+    }
+
+    /// 这个账号是否被单独暂停。
+    pub fn account_paused(&self, index: usize) -> bool {
+        self.paused_accounts
+            .lock()
+            .map(|guard| guard.contains(&index))
+            .unwrap_or(false)
+    }
+
+    /// 当前被暂停的账号集合（一次性取，避免界面多次加锁）。
+    pub fn paused_accounts(&self) -> std::collections::BTreeSet<usize> {
+        self.paused_accounts
+            .lock()
+            .map(|guard| guard.clone())
+            .unwrap_or_default()
     }
 
     /// 请求立刻执行一次（由界面调用，真正的执行在调度线程里排队）。
@@ -312,6 +338,53 @@ impl Drop for Runtime {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::SeqCst);
     }
+}
+
+/// 执行一轮签到。
+///
+/// `hooks.run`（到点执行）与「立即签到」共用这一份实现 —— 之前「立即签到」
+/// 只是把标志位 swap 掉却什么也不做，所以点了只多一行日志、没有实际动作。
+fn execute_round(
+    shared: &SharedHandle,
+    site: &Site,
+    notifier: &Notifier,
+    config_path: &std::path::Path,
+    skip: &std::collections::BTreeSet<usize>,
+) -> i32 {
+    push(shared, LogKind::Info, "开始执行一轮签到");
+    let mut lines = Vec::new();
+    let report = {
+        let mut runner = Runner::new(site, notifier, config_path, |line: &str| {
+            lines.push(line.to_string())
+        })
+        .with_skip(skip.iter().copied());
+        runner.run_once()
+    };
+    for line in lines {
+        push(shared, LogKind::Info, line);
+    }
+    for outcome in &report.outcomes {
+        let kind = match outcome.status {
+            bjmf_core::SignStatus::Success | bjmf_core::SignStatus::AlreadySigned => LogKind::Ok,
+            bjmf_core::SignStatus::Error | bjmf_core::SignStatus::Skip => LogKind::Bad,
+            _ => LogKind::Info,
+        };
+        push(shared, kind, format!("{}：{}", outcome.name, outcome.detail));
+    }
+    let code = report.exit_code();
+    if let Ok(mut guard) = shared.lock() {
+        guard.last_exit = Some(code);
+    }
+    push(
+        shared,
+        if code == 0 { LogKind::Ok } else { LogKind::Bad },
+        if code == 0 {
+            "本轮执行完成".to_string()
+        } else {
+            "本轮执行失败，可按 Ctrl+Enter 重试".to_string()
+        },
+    );
+    code
 }
 
 fn push(shared: &SharedHandle, kind: LogKind, text: impl Into<String>) {

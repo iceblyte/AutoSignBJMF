@@ -179,6 +179,7 @@ pub fn spawn(
                                     Some(TrayAction::Settings) => {
                                         if let Ok(mut guard) = runtime.lock() {
                                             guard.show_requested = true;
+                                            guard.show_settings = true;
                                             guard.pending.push((
                                                 LogKind::Info,
                                                 "托盘：打开设置".into(),
@@ -248,11 +249,6 @@ fn build_tray(autostart_on: bool) -> Result<(TrayIds, TrayItems, tray_icon::Tray
     );
     let settings = MenuItem::new("设置", true, None);
     let quit = MenuItem::new("退出", true, None);
-
-    let items = TrayItems {
-        autostart: autostart.clone(),
-        pause: pause.clone(),
-    };
 
     let items = TrayItems {
         autostart: autostart.clone(),

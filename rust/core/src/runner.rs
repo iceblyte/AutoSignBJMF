@@ -6,6 +6,7 @@
 //! 2. **退出码**：只要有账号不是硬失败就算成功（0）；全是 `skip` / `error` 才返回 1。
 //!    这样「今天没有签到」不会被当成失败。
 
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use crate::model::{Config, Student};
@@ -50,6 +51,8 @@ pub struct Runner<'a, L: FnMut(&str)> {
     site: &'a Site,
     notifier: &'a Notifier,
     config_path: PathBuf,
+    /// 这些下标的账号本轮跳过（界面里单独暂停的账号）。
+    skip: BTreeSet<usize>,
     log: L,
 }
 
@@ -64,8 +67,15 @@ impl<'a, L: FnMut(&str)> Runner<'a, L> {
             site,
             notifier,
             config_path: config_path.into(),
+            skip: BTreeSet::new(),
             log,
         }
+    }
+
+    /// 指定本轮要跳过的账号下标（被单独暂停的账号）。
+    pub fn with_skip(mut self, skip: impl IntoIterator<Item = usize>) -> Self {
+        self.skip = skip.into_iter().collect();
+        self
     }
 
     pub fn config_path(&self) -> &Path {
@@ -78,6 +88,16 @@ impl<'a, L: FnMut(&str)> Runner<'a, L> {
         let mut report = Report::default();
 
         for index in 0..config.students.len() {
+            if self.skip.contains(&index) {
+                // 被单独暂停的账号：不进报告、不发通知，只留一行日志
+                let name = config
+                    .students
+                    .get(index)
+                    .map(|student| student.name.clone())
+                    .unwrap_or_default();
+                (self.log)(&format!("{name}：已暂停，本轮跳过"));
+                continue;
+            }
             let outcome = self.run_student(&mut config, index, &mut report.config_changed);
             (self.log)(&format!("{}：{}", outcome.name, outcome.detail));
             report.outcomes.push(outcome);

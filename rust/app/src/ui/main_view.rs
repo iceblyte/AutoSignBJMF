@@ -31,10 +31,6 @@ pub enum Field {
     RetryAttempts,
     RetryDelay,
     AddTime,
-    /// 手动添加账号：姓名
-    NewName,
-    /// 手动添加账号：班级 / 学号
-    NewClass,
 }
 
 impl Field {
@@ -47,12 +43,10 @@ impl Field {
             Field::RetryAttempts => 4,
             Field::RetryDelay => 5,
             Field::AddTime => 6,
-            Field::NewName => 7,
-            Field::NewClass => 8,
         }
     }
 
-    pub const ALL: [Field; 9] = [
+    pub const ALL: [Field; 7] = [
         Field::Lat,
         Field::Lng,
         Field::Wx,
@@ -60,8 +54,6 @@ impl Field {
         Field::RetryAttempts,
         Field::RetryDelay,
         Field::AddTime,
-        Field::NewName,
-        Field::NewClass,
     ];
 }
 
@@ -74,8 +66,6 @@ pub enum Overlay {
     CloseHint,
     /// 添加执行时间：从列表点选，不手输
     TimePicker,
-    /// 手动添加账号
-    AddAccount,
 }
 
 /// 当前展开了哪个下拉列表（同一时刻只允许一个）。
@@ -121,11 +111,13 @@ pub struct AppView {
     /// 时间选择器里当前选中的时 / 分
     pub picker_hour: u32,
     pub picker_minute: u32,
-    /// 手动添加账号的输入
-    pub new_name: String,
-    pub new_class: String,
     /// 当前展开的下拉（重试次数 / 重试间隔 / 时 / 分）
     pub open_select: OpenSelect,
+    /// 展开中的下拉浮层的左上角（窗口坐标）。
+    ///
+    /// 列表必须画在根层：主界面 body 和弹窗都是 overflow_hidden，
+    /// 放在原地展开会把窗口撑高，或者被裁掉一半。
+    pub dropdown_at: Option<(OpenSelect, Pixels, Pixels)>,
     /// 日志区的滚动位置（日志多了要能翻）
     pub log_scroll: ScrollHandle,
     focus: Vec<FocusHandle>,
@@ -156,7 +148,6 @@ impl AppView {
                 "data" => Overlay::Settings(SettingsTab::Data),
                 "qr" => Overlay::Qr,
                 "time" => Overlay::TimePicker,
-                "add" => Overlay::AddAccount,
                 _ => Overlay::None,
             };
         }
@@ -174,6 +165,21 @@ impl AppView {
                     } else {
                         view.import_config(cx);
                     }
+                });
+            })
+            .detach();
+        }
+
+        // QA 回归用：AUTOSIGN_TEST_RUNNOW=1 启动 3 秒后自动触发「立即签到」，
+        // 用来验证调度线程真的执行了一轮（不是只写了一行日志）。
+        if std::env::var("AUTOSIGN_TEST_RUNNOW").is_ok() {
+            cx.spawn(async move |this, cx| {
+                cx.background_executor()
+                    .timer(std::time::Duration::from_secs(3))
+                    .await;
+                let _ = this.update(cx, |view, cx| {
+                    view.run_now();
+                    cx.notify();
                 });
             })
             .detach();
@@ -208,9 +214,8 @@ impl AppView {
             qr_error: None,
             picker_hour,
             picker_minute,
-            new_name: String::new(),
-            new_class: String::new(),
             open_select: OpenSelect::None,
+            dropdown_at: None,
             log_scroll: ScrollHandle::new(),
             focus,
             close_hint_muted: false,
@@ -219,13 +224,18 @@ impl AppView {
 
         // 截图/QA：AUTOSIGN_PICKER=hour|minute|attempts|delay 直接把对应下拉展开
         if let Ok(kind) = std::env::var("AUTOSIGN_PICKER") {
-            view.open_select = match kind.as_str() {
+            let selected = match kind.as_str() {
                 "hour" => OpenSelect::Hour,
                 "minute" => OpenSelect::Minute,
                 "attempts" => OpenSelect::RetryAttempts,
                 "delay" => OpenSelect::RetryDelay,
                 _ => OpenSelect::None,
             };
+            view.open_select = selected;
+            if selected != OpenSelect::None {
+                // 浮层需要位置，这里给一个固定点用于截图
+                view.dropdown_at = Some((selected, px(430.0), px(430.0)));
+            }
         }
         view
     }
@@ -285,10 +295,20 @@ impl AppView {
             }
         }
 
-        // 托盘「打开主窗口」
+        // 托盘「打开主窗口」/「设置」
         if self.runtime.take_show_request() {
             crate::system::win::show_main_window();
-            self.overlay = Overlay::None;
+            let want_settings = self
+                .runtime
+                .shared
+                .lock()
+                .map(|mut guard| std::mem::take(&mut guard.show_settings))
+                .unwrap_or(false);
+            self.overlay = if want_settings {
+                Overlay::Settings(SettingsTab::General)
+            } else {
+                Overlay::None
+            };
         }
     }
 
@@ -310,8 +330,6 @@ impl AppView {
             Field::RetryAttempts => draft.retry_attempts.clone(),
             Field::RetryDelay => draft.retry_delay.clone(),
             Field::AddTime => self.add_time.clone(),
-            Field::NewName => self.new_name.clone(),
-            Field::NewClass => self.new_class.clone(),
         }
     }
 
@@ -319,14 +337,6 @@ impl AppView {
         match field {
             Field::AddTime => {
                 self.add_time = value;
-                return;
-            }
-            Field::NewName => {
-                self.new_name = value;
-                return;
-            }
-            Field::NewClass => {
-                self.new_class = value;
                 return;
             }
             _ => {}
@@ -338,7 +348,7 @@ impl AppView {
             Field::Qq => draft.qq_key = value,
             Field::RetryAttempts => draft.retry_attempts = value,
             Field::RetryDelay => draft.retry_delay = value,
-            Field::AddTime | Field::NewName | Field::NewClass => {}
+            Field::AddTime => {}
         });
     }
 
@@ -619,7 +629,7 @@ impl AppView {
                     .pr(px(8.0))
                     .gap(px(8.0))
                     .window_control_area(WindowControlArea::Drag)
-                    .child(img("logo.png").w(px(16.0)).h(px(16.0)))
+                    .child(img("logo-64.png").w(px(20.0)).h(px(20.0)))
                     .child(
                         div()
                             .text_size(px(12.0))
@@ -746,18 +756,7 @@ impl AppView {
                                         this.start_qr_login(window, cx);
                                     })),
                             )
-                            .child(
-                                button("手动", BtnKind::Default, BtnSize::Xs, false, p)
-                                    .id("add-account-manual")
-                                    .cursor_pointer()
-                                    .on_click(cx.listener(|this, _, window, cx| {
-                                        this.new_name.clear();
-                                        this.new_class.clear();
-                                        this.overlay = Overlay::AddAccount;
-                                        window.focus(&this.focus[Field::NewName.index()], cx);
-                                        cx.notify();
-                                    })),
-                            ),
+                            ,
                     ),
             )
             .child(div().flex_1().min_h_0().overflow_hidden().child(rows))
@@ -893,6 +892,45 @@ impl AppView {
                             .child(switch(minimize, false, p)),
                     ),
             )
+            // 一键暂停 / 恢复全部账号
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .pt(px(1.0))
+                    .child(
+                        div()
+                            .text_size(px(11.5))
+                            .text_color(rgb(p.text_2))
+                            .child("全部账号"),
+                    )
+                    .child(
+                        button(
+                            if self.state.paused { "恢复" } else { "暂停" },
+                            BtnKind::Default,
+                            BtnSize::Xs,
+                            false,
+                            p,
+                        )
+                        .id("pause-all")
+                        .cursor_pointer()
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            let next = !this.state.paused;
+                            this.runtime.set_paused(next);
+                            this.state.paused = next;
+                            this.state.log(
+                                LogKind::Info,
+                                if next {
+                                    "已暂停全部账号（单个账号仍可单独恢复）".to_string()
+                                } else {
+                                    "已恢复全部账号".to_string()
+                                },
+                            );
+                            cx.notify();
+                        })),
+                    ),
+            )
             .child(
                 div()
                     .flex()
@@ -941,10 +979,19 @@ impl AppView {
             student.name.clone()
         };
 
-        let (pill_fg, pill_bg, pill_border) = match status {
-            AccountStatus::Running => (p.ok, p.ok_soft, p.ok_line),
-            AccountStatus::NeedsLogin | AccountStatus::Failed => (p.warn, p.warn_soft, p.warn_line),
-            _ => (p.text_2, p.surface_3, p.surface_3),
+        // 暂停是「按账号」的：这个账号被暂停时，pill 直接显示「已暂停」
+        let account_paused = self.runtime.account_paused(index);
+        let (pill_label, pill_fg, pill_bg, pill_border) = if account_paused {
+            ("已暂停", p.text_2, p.surface_3, p.surface_3)
+        } else {
+            let colors = match status {
+                AccountStatus::Running => (p.ok, p.ok_soft, p.ok_line),
+                AccountStatus::NeedsLogin | AccountStatus::Failed => {
+                    (p.warn, p.warn_soft, p.warn_line)
+                }
+                _ => (p.text_2, p.surface_3, p.surface_3),
+            };
+            (status.label(), colors.0, colors.1, colors.2)
         };
 
         let readonly = status == AccountStatus::NeedsLogin;
@@ -976,13 +1023,7 @@ impl AppView {
                             .child(self.state.headline_of(index)),
                     ),
             )
-            .child(pill(
-                status.label(),
-                pill_fg,
-                pill_bg,
-                pill_border,
-                true,
-            ));
+            .child(pill(pill_label, pill_fg, pill_bg, pill_border, true));
 
         header = if readonly {
             header
@@ -1007,9 +1048,9 @@ impl AppView {
         } else {
             header
                 .child(
-                    // 文案跟着状态走：暂停中显示「恢复」，否则显示「暂停」
+                    // 只针对当前选中的账号；「全部」在左侧底部
                     button(
-                        if self.state.paused { "恢复" } else { "暂停" },
+                        if account_paused { "恢复此账号" } else { "暂停此账号" },
                         BtnKind::Default,
                         BtnSize::Small,
                         false,
@@ -1018,12 +1059,22 @@ impl AppView {
                         .id("toggle-pause")
                         .cursor_pointer()
                         .on_click(cx.listener(|this, _, _, cx| {
-                            let next = !this.state.paused;
-                            this.runtime.set_paused(next);
-                            this.state.paused = next;
+                            let index = this.state.selected;
+                            let next = !this.runtime.account_paused(index);
+                            this.runtime.set_account_paused(index, next);
+                            let who = this
+                                .state
+                                .students()
+                                .get(index)
+                                .map(|student| student.name.clone())
+                                .unwrap_or_else(|| format!("账号{}", index + 1));
                             this.state.log(
                                 LogKind::Info,
-                                if next { "已暂停全部账号" } else { "已恢复调度" },
+                                if next {
+                                    format!("已暂停「{who}」，其它账号照常执行")
+                                } else {
+                                    format!("已恢复「{who}」")
+                                },
                             );
                             cx.notify();
                         })),
@@ -1132,12 +1183,13 @@ impl AppView {
             .map(|student| (student.wx_enabled(), student.qq_enabled()))
             .unwrap_or((false, false));
         let wx = if wx_on {
-            self.text_field(Field::Wx, true, readonly, p, cx)
+            // 通知 Key 与签到凭证无关，账号需要重登时也应该能编辑
+            self.text_field(Field::Wx, true, false, p, cx)
         } else {
             closed_channel_hint("已关闭，打开开关后填写", p)
         };
         let qq = if qq_on {
-            self.text_field(Field::Qq, true, readonly, p, cx)
+            self.text_field(Field::Qq, true, false, p, cx)
         } else {
             closed_channel_hint("已关闭，打开开关后填写", p)
         };
@@ -1196,7 +1248,7 @@ impl AppView {
                                     "微信通知 · Server 酱",
                                     wx_on,
                                     Field::Wx,
-                                    readonly,
+                                    false,
                                     p,
                                     cx,
                                 ),
@@ -1207,7 +1259,7 @@ impl AppView {
                                     "QQ 通知 · Qmsg 酱",
                                     qq_on,
                                     Field::Qq,
-                                    readonly,
+                                    false,
                                     p,
                                     cx,
                                 ),
@@ -1268,12 +1320,10 @@ impl AppView {
         // 重试次数与间隔都改成下拉点选，不再手输数字
         let attempts_value = self.state.settings.retry_attempts;
         let delay_value = self.state.settings.retry_delay_minutes;
-        let open_attempts = self.open_select == OpenSelect::RetryAttempts;
-        let open_delay = self.open_select == OpenSelect::RetryDelay;
 
         let attempts = select_trigger(
             format!("{attempts_value}"),
-            open_attempts,
+            self.open_select == OpenSelect::RetryAttempts,
             62.0,
             "retry-attempts",
             readonly,
@@ -1289,7 +1339,7 @@ impl AppView {
         );
         let delay = select_trigger(
             format!("{delay_value}"),
-            open_delay,
+            self.open_select == OpenSelect::RetryDelay,
             62.0,
             "retry-delay",
             readonly,
@@ -1374,181 +1424,12 @@ impl AppView {
                                             .child("1–10 次 · 1–60 分钟"),
                                     ),
                             )
-                            .when(open_attempts, |row| {
-                                row.child(dropdown_list(
-                                    (1..=10u32)
-                                        .map(|n| (format!("{n} 次"), n == attempts_value))
-                                        .collect(),
-                                    176.0,
-                                    2,
-                                    "retry-attempts-opt",
-                                    p,
-                                    cx,
-                                    move |this, index| {
-                                        let _ = this.state.set_retry_attempts(index as u32 + 1);
-                                        this.open_select = OpenSelect::None;
-                                    },
-                                ))
-                            })
-                            .when(open_delay, |row| {
-                                row.child(dropdown_list(
-                                    RETRY_DELAYS
-                                        .iter()
-                                        .map(|n| (format!("{n} 分钟"), *n == delay_value))
-                                        .collect(),
-                                    176.0,
-                                    2,
-                                    "retry-delay-opt",
-                                    p,
-                                    cx,
-                                    move |this, index| {
-                                        let value = RETRY_DELAYS[index];
-                                        let _ = this.state.set_retry_delay(value);
-                                        this.open_select = OpenSelect::None;
-                                    },
-                                ))
-                            }),
+
                     ),
             );
 
         // 注：时间点不再用文本输入（见 ui/time_picker.rs），这里不再渲染「新增时间点」行。
         panel.into_any_element()
-    }
-
-    /// 手动添加账号的弹窗：姓名必填，班级可空；凭证留给扫码。
-    fn render_add_account(&mut self, p: &Palette, cx: &mut Context<Self>) -> AnyElement {
-        let name_input = self.text_field(Field::NewName, false, false, p, cx);
-        let class_input = self.text_field(Field::NewClass, false, false, p, cx);
-        let can_add = !self.new_name.trim().is_empty();
-
-        div()
-            .absolute()
-            .inset_0()
-            .flex()
-            .items_center()
-            .justify_center()
-            .bg(rgba(0x0f121675))
-            .child(
-                div()
-                    .w(px(430.0))
-                    .flex()
-                    .flex_col()
-                    .rounded(px(14.0))
-                    .bg(rgb(p.surface))
-                    .border_1()
-                    .border_color(rgb(p.line))
-                    .overflow_hidden()
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .px(px(15.0))
-                            .py(px(13.0))
-                            .border_b_1()
-                            .border_color(rgb(p.line))
-                            .child(
-                                div()
-                                    .text_size(px(13.0))
-                                    .text_color(rgb(p.text))
-                                    .child("手动添加账号"),
-                            )
-                            .child(div().flex_1())
-                            .child(
-                                div()
-                                    .id("add-account-close")
-                                    .w(px(22.0))
-                                    .h(px(22.0))
-                                    .flex()
-                                    .items_center()
-                                    .justify_center()
-                                    .rounded(px(5.0))
-                                    .text_size(px(14.0))
-                                    .text_color(rgb(p.text_3))
-                                    .cursor_pointer()
-                                    .hover(|style| style.bg(rgb(p.surface_3)))
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        this.overlay = Overlay::None;
-                                        cx.notify();
-                                    }))
-                                    .child("×"),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .gap(px(10.0))
-                            .px(px(16.0))
-                            .py(px(14.0))
-                            .child(
-                                div()
-                                    .text_size(px(11.0))
-                                    .text_color(rgb(p.text_3))
-                                    .child("先建条目，保存后再用「扫码」补齐登录凭证；没有凭证不会自动签到。"),
-                            )
-                            .child(field_block("姓名", name_input, p))
-                            .child(field_block("班级 / 学号（可留空）", class_input, p)),
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap(px(8.0))
-                            .px(px(16.0))
-                            .py(px(13.0))
-                            .border_t_1()
-                            .border_color(rgb(p.line))
-                            .child(
-                                div()
-                                    .text_size(px(11.0))
-                                    .text_color(rgb(p.text_3))
-                                    .child(if can_add {
-                                        "添加后会切到这个账号"
-                                    } else {
-                                        "姓名不能为空"
-                                    }),
-                            )
-                            .child(div().flex_1())
-                            .child(
-                                button("取消", BtnKind::Default, BtnSize::Small, false, p)
-                                    .id("add-account-cancel")
-                                    .cursor_pointer()
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        this.overlay = Overlay::None;
-                                        cx.notify();
-                                    })),
-                            )
-                            .child(
-                                button("添加", BtnKind::Primary, BtnSize::Small, !can_add, p)
-                                    .id("add-account-confirm")
-                                    .when(can_add, |element| {
-                                        element.cursor_pointer().on_click(cx.listener(
-                                            |this, _, _, cx| {
-                                                let name = this.new_name.clone();
-                                                let class = this.new_class.clone();
-                                                match this.state.add_student(&name, &class) {
-                                                    Ok(_) => {
-                                                        this.overlay = Overlay::None;
-                                                        this.new_name.clear();
-                                                        this.new_class.clear();
-                                                        this.error = None;
-                                                        this.state.log(
-                                                            LogKind::Info,
-                                                            format!("已添加账号 {name}，还需要扫码登录"),
-                                                        );
-                                                    }
-                                                    Err(error) => {
-                                                        this.error = Some(error.0);
-                                                    }
-                                                }
-                                                cx.notify();
-                                            },
-                                        ))
-                                    }),
-                            ),
-                    ),
-            )
-            .into_any_element()
     }
 
     fn render_log_panel(&self, p: &Palette, cx: &mut Context<Self>) -> AnyElement {
@@ -1825,7 +1706,7 @@ impl AppView {
                             .flex()
                             .flex_col()
                             .items_center()
-                            .child(img("logo.png").w(px(52.0)).h(px(52.0)))
+                            .child(img("logo-64.png").w(px(52.0)).h(px(52.0)))
                             .child(
                                 div()
                                     .mt(px(14.0))
@@ -1930,8 +1811,6 @@ impl AppView {
             Field::RetryAttempts => "3",
             Field::RetryDelay => "5",
             Field::AddTime => "21:31",
-            Field::NewName => "例如：张明远",
-            Field::NewClass => "例如：2023 级计算机 1 班",
         };
         let empty = value.trim().is_empty();
         let index = field.index();
@@ -2114,6 +1993,74 @@ fn field_block_with_switch(header: AnyElement, input: AnyElement) -> AnyElement 
         .into_any_element()
 }
 
+/// 根据当前展开的下拉，构造浮层里的选项列表。
+fn dropdown_overlay(
+    kind: OpenSelect,
+    view: &mut AppView,
+    p: &Palette,
+    cx: &mut Context<AppView>,
+) -> AnyElement {
+    let (items, width): (Vec<(String, bool)>, f32) = match kind {
+        OpenSelect::RetryAttempts => {
+            let current = view.state.settings.retry_attempts;
+            (
+                (1..=10u32)
+                    .map(|n| (format!("{n} 次"), n == current))
+                    .collect(),
+                132.0,
+            )
+        }
+        OpenSelect::RetryDelay => {
+            let current = view.state.settings.retry_delay_minutes;
+            (
+                RETRY_DELAYS
+                    .iter()
+                    .map(|n| (format!("{n} 分钟"), *n == current))
+                    .collect(),
+                132.0,
+            )
+        }
+        OpenSelect::Hour => {
+            let current = view.picker_hour;
+            (
+                (0..24u32)
+                    .map(|h| (format!("{h:02} 时"), h == current))
+                    .collect(),
+                132.0,
+            )
+        }
+        OpenSelect::Minute => {
+            let current = view.picker_minute;
+            (
+                (0..(60 / 5))
+                    .map(|index| {
+                        let m = index * 5;
+                        (format!("{m:02} 分"), m == current)
+                    })
+                    .collect(),
+                132.0,
+            )
+        }
+        OpenSelect::None => return div().into_any_element(),
+    };
+
+    dropdown_list(items, width, 2, "overlay-list", p, cx, move |this, index| {
+        match kind {
+            OpenSelect::RetryAttempts => {
+                let _ = this.state.set_retry_attempts(index as u32 + 1);
+            }
+            OpenSelect::RetryDelay => {
+                let _ = this.state.set_retry_delay(RETRY_DELAYS[index]);
+            }
+            OpenSelect::Hour => this.picker_hour = index as u32,
+            OpenSelect::Minute => this.picker_minute = index as u32 * 5,
+            OpenSelect::None => {}
+        }
+        this.open_select = OpenSelect::None;
+        this.dropdown_at = None;
+    })
+}
+
 /// 下拉列表：竖直选项，项多时分成几列一次显示，不靠滚动。
 ///
 /// 之前试过「限高 + 滚动 + 打开时滚到当前值」，gpui 的 ScrollHandle 要等布局完成
@@ -2219,8 +2166,14 @@ fn select_trigger(
         trigger = trigger
             .cursor_pointer()
             .hover(|style| style.border_color(rgb(p.text_3)))
-            .on_click(cx.listener(move |this, _, _, cx| {
+            .on_click(cx.listener(move |this, event: &ClickEvent, _, cx| {
                 on_toggle(this);
+                let pos = event.position();
+                this.dropdown_at = if this.open_select == OpenSelect::None {
+                    None
+                } else {
+                    Some((this.open_select, pos.x, pos.y))
+                };
                 cx.notify();
             }));
     }
@@ -2331,8 +2284,32 @@ impl Render for AppView {
             Overlay::Qr => root = root.child(crate::ui::qr_modal::render(self, p, cx)),
             Overlay::Settings(_) => root = root.child(crate::ui::settings::render(self, p, cx)),
             Overlay::TimePicker => root = root.child(crate::ui::time_picker::render(self, p, cx)),
-            Overlay::AddAccount => root = root.child(self.render_add_account(p, cx)),
             Overlay::None => {}
+        }
+
+        // 下拉浮层画在最上层：底下垫一个透明遮罩，点别处收起
+        if let Some((kind, x, y)) = self.dropdown_at {
+            root = root
+                .child(
+                    div()
+                        .absolute()
+                        .inset_0()
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|this, _, _, cx| {
+                                this.dropdown_at = None;
+                                this.open_select = OpenSelect::None;
+                                cx.notify();
+                            }),
+                        ),
+                )
+                .child(
+                    div()
+                        .absolute()
+                        .left(x)
+                        .top(y + px(4.0))
+                        .child(dropdown_overlay(kind, self, p, cx)),
+                );
         }
         root
     }
@@ -2352,7 +2329,7 @@ impl AppView {
             .bg(rgb(p.surface))
             .border_1()
             .border_color(rgb(p.line))
-            .child(img("logo.png").w(px(18.0)).h(px(18.0)).mt(px(1.0)))
+            .child(img("logo-64.png").w(px(18.0)).h(px(18.0)).mt(px(1.0)))
             .child(
                 div()
                     .flex()

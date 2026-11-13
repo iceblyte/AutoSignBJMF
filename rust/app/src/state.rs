@@ -367,43 +367,6 @@ impl AppState {
             .map_err(|error| FieldError(format!("保存设置失败：{error}")))
     }
 
-    /// 手动添加账号：只建条目，凭证留空，需要之后扫码补齐。
-    ///
-    /// 扫码是唯一能拿到 Cookie 的途径，所以这里建出来的账号会直接标记为「需重新登录」，
-    /// 界面上会提示去扫码，而不是假装它已经能用。
-    pub fn add_student(&mut self, name: &str, class: &str) -> Result<usize, FieldError> {
-        let name = name.trim();
-        if name.is_empty() {
-            return Err(FieldError("请填写姓名".into()));
-        }
-        if self
-            .config
-            .students
-            .iter()
-            .any(|student| student.name.trim() == name)
-        {
-            return Err(FieldError(format!("已经有一个叫「{name}」的账号了")));
-        }
-
-        let student = Student {
-            name: name.to_string(),
-            class: class.trim().to_string(),
-            acc: self.settings.acc.clone(),
-            ..Student::default()
-        };
-        self.config.students.push(student);
-        if let Err(error) = self.config.save(self.paths.config_file()) {
-            self.config.students.pop();
-            return Err(FieldError(format!("保存失败：{error}")));
-        }
-
-        let index = self.config.students.len() - 1;
-        self.selected = index;
-        self.needs_login.insert(index);
-        self.reload_draft();
-        Ok(index)
-    }
-
     /// 改失败重试次数（1–10，超界收敛到边界）。
     pub fn set_retry_attempts(&mut self, value: u32) -> Result<(), FieldError> {
         let clamped = value.clamp(1, 10);
@@ -663,29 +626,6 @@ mod tests {
         paths.ensure().unwrap();
         fs::write(paths.config_file(), json).unwrap();
         AppState::load(paths)
-    }
-
-    #[test]
-    fn 手动添加账号会落盘并标记待登录() {
-        let mut state = state_with_students("add-student", TWO);
-        let index = state.add_student("新同学", "2023 级").unwrap();
-
-        assert_eq!(index, 2);
-        assert_eq!(state.students()[2].name, "新同学");
-        assert_eq!(state.status_of(index), AccountStatus::NeedsLogin);
-
-        // 真的写进了 data.json
-        let saved = Config::load(state.paths.config_file()).unwrap();
-        assert_eq!(saved.students.len(), 3);
-        assert_eq!(saved.students[2].name, "新同学");
-    }
-
-    #[test]
-    fn 手动添加拒绝空名与重名() {
-        let mut state = state_with_students("add-student-dup", TWO);
-        assert!(state.add_student("   ", "").is_err(), "空名应当拒绝");
-        assert!(state.add_student("张明远", "").is_err(), "重名应当拒绝");
-        assert_eq!(state.students().len(), 2, "失败时不能留下脏数据");
     }
 
     const TWO: &str = r#"{"students":[
