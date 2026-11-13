@@ -823,6 +823,7 @@ dependencies = [
  "chrono",
  "embed-resource 2.5.2",
  "gpui-kit",
+ "raw-window-handle",
  "rfd",
  "serde_json",
  "tray-icon",

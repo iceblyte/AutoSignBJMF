@@ -147,6 +147,31 @@ GPUI 单进程就能同时满足「开窗 55 MB」「关窗后不掉到几百兆
   回归脚本：`python rust/_tools/close_test.py`（拉起 → 发 WM_CLOSE → 断言隐藏且进程存活）
 - 打包：`build/build-rust.ps1`（`-Portable` 额外出一份便携 zip，包内不含任何账号数据）
 
+### 已完成（第十五轮）
+
+**② 窗口显隐改用窗口自己的句柄**
+
+`raw_window_handle::HasWindowHandle` 从 `&Window` 直接取 HWND，不再 `EnumWindows` 枚举：
+
+```rust
+fn window_hwnd_of(window: &Window) -> Option<*mut c_void> {
+    match HasWindowHandle::window_handle(window).ok()?.as_raw() {
+        RawWindowHandle::Win32(h) => Some(h.hwnd.get() as *mut c_void),
+        _ => None,
+    }
+}
+```
+
+配套改了 `tick` 与托盘命令处理：两者都从 `spawn` 换成 `spawn_in` + `update_in`，
+这样回调里能拿到 `&mut Window`，隐藏/唤回直接操作自己的窗口，不可能认错对象。
+`close_hint` 里没有主窗口引用，仍走按标题查找。
+
+**③ 开关换成 gpui-kit 组件**
+
+`gpui_kit::component::switch::Switch`，轨道色用 `.color(Hsla::from(rgb(p.accent)))`
+接我们的强调色。替换了设置页「开机自动启动」与主界面两个通知开关 ——
+组件自带键盘可达性与过渡动画，之前手写的 div 没有。
+
 ### 已完成（第十四轮）
 
 **托盘即时响应**（对齐 ElegantClipboard 的 channel 做法）：

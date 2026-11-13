@@ -84,10 +84,10 @@ fn main() {
 
     application().with_assets(Assets).run(move |cx| {
         gpui_kit::init(cx);
-        let handle = open_window(options, cx, move |_, cx| {
+        let handle = open_window(options, cx, move |window, cx| {
             cx.new(|cx| {
                 let mut view = AppView::new(state, runtime.clone(), cx);
-                view.start_ticker(cx);
+                view.start_ticker(window, cx);
                 view
             })
         })

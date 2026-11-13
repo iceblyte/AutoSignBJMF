@@ -19,6 +19,7 @@ use gpui_kit::base::StyledExt;
 
 use gpui_kit::component::scroll::ScrollableElement;
 use gpui_kit::assets::IconNamed;
+use gpui_kit::component::switch::Switch;
 use gpui_kit::component::IconName;
 
 use crate::state::{AccountStatus, AppState, LogKind, PillTone};
@@ -234,17 +235,26 @@ impl AppView {
         // 用来验证「最小化到托盘后还能不能找回来 / 关闭是否真的生效」。
         if std::env::var("AUTOSIGN_TEST_HIDE").is_ok() {
             cx.spawn(async move |this, cx| {
+                // 走真实路径：点关闭 → tick 用窗口自己的句柄隐藏
                 cx.background_executor()
                     .timer(std::time::Duration::from_secs(3))
                     .await;
-                crate::system::win::hide_main_window();
-                eprintln!("QA: hidden");
+                let _ = this.update(cx, |view, cx| {
+                    view.close_signal
+                        .store(true, std::sync::atomic::Ordering::SeqCst);
+                    cx.notify();
+                });
+                eprintln!("QA: close requested");
+                // 再从托盘命令唤回，验证「隐藏 → 打开」整条链
                 cx.background_executor()
                     .timer(std::time::Duration::from_secs(3))
                     .await;
-                crate::system::win::show_main_window();
-                eprintln!("QA: shown");
-                let _ = this.update(cx, |_, cx| cx.notify());
+                let _ = this.update(cx, |view, cx| {
+                    view.runtime
+                        .send_tray_command(crate::system::tray::TrayCommand::Open);
+                    cx.notify();
+                });
+                eprintln!("QA: tray open sent");
             })
             .detach();
         }
@@ -335,14 +345,15 @@ impl AppView {
     ///
     /// 之前是「托盘写共享标志 → 主线程每秒 tick 读一次」，点了最坏要等 1 秒，
     /// 手感上就像没反应。改成 async_channel 之后是即时的。
-    fn spawn_tray_events(&mut self, cx: &mut Context<Self>) {
+    fn spawn_tray_events(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(receiver) = self.runtime.take_tray_events() else {
             return;
         };
-        cx.spawn(async move |this, cx| {
+        cx.spawn_in(window, async move |this, cx| {
             while let Ok(command) = receiver.recv().await {
-                let _ = this.update(cx, |view, cx| {
-                    view.apply_tray_command(command, cx);
+                // update_in 带 window：处理「打开主窗口」时能直接操作自己的 HWND
+                let _ = this.update_in(cx, |view, window, cx| {
+                    view.apply_tray_command(command, window, cx);
                 });
             }
         })
@@ -353,16 +364,17 @@ impl AppView {
     fn apply_tray_command(
         &mut self,
         command: crate::system::tray::TrayCommand,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         use crate::system::tray::TrayCommand;
         match command {
             TrayCommand::Open => {
-                crate::system::win::show_main_window();
+                crate::system::win::show_window(window);
                 self.overlay = Overlay::None;
             }
             TrayCommand::Settings => {
-                crate::system::win::show_main_window();
+                crate::system::win::show_window(window);
                 self.open_settings(cx);
             }
             TrayCommand::RunNow => {
@@ -398,16 +410,17 @@ impl AppView {
         cx.notify();
     }
 
-    pub fn start_ticker(&mut self, cx: &mut Context<Self>) {
-        self.spawn_tray_events(cx);
-        cx.spawn(async move |this, cx| {
+    pub fn start_ticker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.spawn_tray_events(window, cx);
+        cx.spawn_in(window, async move |this, cx| {
             loop {
                 cx.background_executor()
                     .timer(std::time::Duration::from_millis(1000))
                     .await;
+                // update_in 能拿到 window，隐藏窗口时就能直接用它自己的句柄
                 if this
-                    .update(cx, |view, cx| {
-                        view.tick(cx);
+                    .update_in(cx, |view, window, cx| {
+                        view.tick(window, cx);
                         cx.notify();
                     })
                     .is_err()
@@ -420,7 +433,7 @@ impl AppView {
     }
 
     /// 同步一次后台状态。
-    pub fn tick(&mut self, cx: &mut Context<Self>) {
+    pub fn tick(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let (running, paused, next, last_exit) = self.runtime.snapshot();
         self.state.running = running;
         self.state.paused = paused;
@@ -443,7 +456,8 @@ impl AppView {
             .swap(false, std::sync::atomic::Ordering::SeqCst)
         {
             if self.state.settings.minimize_to_tray {
-                crate::system::win::hide_main_window();
+                // 直接拿这个窗口的 HWND，不再靠枚举（不会认错窗口）
+                crate::system::win::hide_window(window);
                 self.state.log(LogKind::Info, "窗口已隐藏到托盘，签到继续在后台运行");
                 // 提示必须开独立窗口：主窗口这时候已经隐藏，画在里面等于没提示
                 if !crate::ui::close_hint::is_muted() {
@@ -2282,12 +2296,38 @@ fn notify_header(
     p: &Palette,
     cx: &mut Context<AppView>,
 ) -> AnyElement {
+    // 开关用 gpui-kit 的 Switch：键盘可达、带过渡动画，颜色接我们的强调色
+    let app = cx.entity();
+    let toggle = Switch::new(SharedString::from(format!("notify-switch-{title}")))
+        .checked(checked)
+        .color(Hsla::from(rgb(p.accent)))
+        .on_change(move |next: &bool, _window, cx: &mut App| {
+            let next = *next;
+            app.update(cx, |this, cx| {
+                this.set_channel(field, next);
+                let name = if field == Field::Wx {
+                    "微信通知"
+                } else {
+                    "QQ 通知"
+                };
+                this.state.log(
+                    LogKind::Info,
+                    if next {
+                        format!("已开启{name}，填入 Key 后即可推送")
+                    } else {
+                        format!("已关闭{name}，Key 仍保留在 data.json 里")
+                    },
+                );
+                cx.notify();
+            });
+        });
+
     let mut header = div()
-        .id(SharedString::from(format!("notify-switch-{title}")))
+        .id(SharedString::from(format!("notify-header-{title}")))
         .flex()
         .items_center()
         .gap(px(6.0))
-        .child(switch(checked, readonly, p))
+        .child(toggle)
         .child(
             div()
                 .text_size(px(12.0))

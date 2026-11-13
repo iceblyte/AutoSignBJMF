@@ -5,8 +5,9 @@
 
 use gpui_kit::base::StyledExt;
 use gpui_kit::prelude::*;
+use gpui_kit::component::switch::Switch;
 use gpui_kit::component::{Icon, IconName};
-use gpui_kit::{div, px, rgb, AnyElement, Context, Div};
+use gpui_kit::{div, px, rgb, AnyElement, App, Context, Div, Hsla};
 
 use crate::theme::*;
 use crate::ui::main_view::{AppView, Overlay, SettingsTab};
@@ -177,16 +178,20 @@ fn general(view: &mut AppView, p: &Palette, cx: &mut Context<AppView>) -> AnyEle
         ThemeMode::System => 2,
     };
 
-    let autostart_switch = switch(autostart, false, p)
-        .id("set-autostart")
-        .cursor_pointer()
-        .on_click(cx.listener(|view, _, _, cx| {
-            let next = !view.state.settings.autostart;
-            view.state.settings.autostart = next;
-            crate::system::autostart::set_enabled(next);
-            let _ = view.state.settings.save(view.state.paths.settings_file());
-            cx.notify();
-        }))
+    // 用 gpui-kit 的 Switch（带键盘可达性与过渡动画），只把轨道色接成我们的强调色
+    let app = cx.entity();
+    let autostart_switch = Switch::new("set-autostart")
+        .checked(autostart)
+        .color(Hsla::from(rgb(p.accent)))
+        .on_change(move |checked: &bool, _window, cx: &mut App| {
+            let next = *checked;
+            app.update(cx, |view, cx| {
+                view.state.settings.autostart = next;
+                crate::system::autostart::set_enabled(next);
+                let _ = view.state.settings.save(view.state.paths.settings_file());
+                cx.notify();
+            });
+        })
         .into_any_element();
 
     // 关窗行为：两段式

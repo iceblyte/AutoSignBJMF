@@ -7,7 +7,7 @@ use std::ffi::c_void;
 
 use windows_sys::Win32::Foundation::RECT;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    EnumWindows, FindWindowW, GetWindow, GetWindowRect, GetWindowThreadProcessId, IsWindow, IsWindowVisible, IsZoomed, MessageBoxW, SetForegroundWindow, ShowWindow, ShowWindowAsync, GW_OWNER,
+    EnumWindows, FindWindowW, GetWindow, GetWindowRect, GetWindowThreadProcessId, IsIconic, IsWindow, IsWindowVisible, IsZoomed, MessageBoxW, SetForegroundWindow, ShowWindow, ShowWindowAsync, GW_OWNER,
     MB_ICONINFORMATION, MB_OK, SW_HIDE, SW_RESTORE, SW_SHOW, SW_SHOWMAXIMIZED,
 };
 
@@ -156,6 +156,44 @@ unsafe extern "system" fn visit(hwnd: *mut c_void, lparam: isize) -> i32 {
         }
     }
     1
+}
+
+/// 从 gpui 的 `Window` 直接取 HWND。
+///
+/// 比 `EnumWindows` 可靠得多：窗口是被 Hide 还是 Show、有没有被最小化，
+/// 都不影响这里拿到的是「就是这个窗口」的句柄，不会认错对象。
+pub fn window_hwnd_of(window: &gpui_kit::Window) -> Option<*mut c_void> {
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    let handle = HasWindowHandle::window_handle(window).ok()?;
+    match handle.as_raw() {
+        RawWindowHandle::Win32(handle) => Some(handle.hwnd.get() as *mut c_void),
+        _ => None,
+    }
+}
+
+/// 隐藏指定窗口（主窗口「最小化到托盘」用）。
+pub fn hide_window(window: &gpui_kit::Window) -> bool {
+    match window_hwnd_of(window) {
+        Some(hwnd) => unsafe { ShowWindow(hwnd, SW_HIDE) != 0 },
+        None => false,
+    }
+}
+
+/// 把指定窗口显示出来，最小化的先还原。
+pub fn show_window(window: &gpui_kit::Window) -> bool {
+    let Some(hwnd) = window_hwnd_of(window) else {
+        return false;
+    };
+    unsafe {
+        let command = if IsIconic(hwnd) != 0 {
+            SW_RESTORE
+        } else {
+            SW_SHOW
+        };
+        ShowWindow(hwnd, command);
+        SetForegroundWindow(hwnd);
+        true
+    }
 }
 
 /// 主窗口句柄缓存。
