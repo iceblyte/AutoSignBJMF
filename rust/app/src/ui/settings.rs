@@ -5,7 +5,8 @@
 
 use gpui_kit::base::StyledExt;
 use gpui_kit::prelude::*;
-use gpui_kit::{div, px, rgb, svg, AnyElement, Context, Div};
+use gpui_kit::component::{Icon, IconName};
+use gpui_kit::{div, px, rgb, AnyElement, Context, Div};
 
 use crate::theme::*;
 use crate::ui::main_view::{AppView, Overlay, SettingsTab};
@@ -18,10 +19,12 @@ pub fn render(view: &mut AppView, p: &Palette, cx: &mut Context<AppView>) -> Any
         SettingsTab::About => about(p),
     };
 
+    // 图标改用 gpui-kit 内置的 Lucide 图标集（与 ElegantClipboard 同一套），
+    // 不再自己维护 assets/icons/*.svg
     let items = [
-        (SettingsTab::General, "icons/gear.svg", "常规"),
-        (SettingsTab::Data, "icons/database.svg", "数据"),
-        (SettingsTab::About, "icons/info.svg", "关于"),
+        (SettingsTab::General, IconName::Settings, "常规"),
+        (SettingsTab::Data, IconName::HardDrive, "数据"),
+        (SettingsTab::About, IconName::Info, "关于"),
     ];
     let mut nav = div()
         .flex()
@@ -53,8 +56,7 @@ pub fn render(view: &mut AppView, p: &Palette, cx: &mut Context<AppView>) -> Any
                 cx.notify();
             }))
             .child(
-                svg()
-                    .path(icon)
+                Icon::new(icon)
                     .w(px(14.0))
                     .h(px(14.0))
                     .text_color(rgb(if active { 0xffffff } else { p.text_3 })),

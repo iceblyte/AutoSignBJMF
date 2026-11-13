@@ -18,6 +18,8 @@ use gpui_kit::*;
 use gpui_kit::base::StyledExt;
 
 use gpui_kit::component::scroll::ScrollableElement;
+use gpui_kit::assets::IconNamed;
+use gpui_kit::component::IconName;
 
 use crate::state::{AccountStatus, AppState, LogKind, PillTone};
 use crate::theme::*;
@@ -551,6 +553,27 @@ impl AppView {
         cx.notify();
     }
 
+    /// Esc：按「从内到外」的顺序关一层。
+    ///
+    /// 下拉浮层 → 弹窗覆盖层 → 都没有就把窗口收到托盘（和点 ✕ 一致）。
+    /// 参考 ElegantClipboard 的 dismiss_or_hide：先收临时层，最后才动窗口。
+    fn dismiss_or_hide(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        if self.dropdown_at.is_some() {
+            self.dropdown_at = None;
+            self.open_select = OpenSelect::None;
+            cx.notify();
+            return;
+        }
+        if self.overlay != Overlay::None {
+            self.overlay = Overlay::None;
+            cx.notify();
+            return;
+        }
+        self.close_signal
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        cx.notify();
+    }
+
     /// 立即签到（按钮与 Ctrl+Enter 共用）。
     pub fn run_now(&mut self) {
         self.runtime.request_run_now();
@@ -850,7 +873,7 @@ impl AppView {
                             .border_color(rgb(p.line))
                             .child(
                                 svg()
-                                    .path("icons/person-add.svg")
+                                    .path(IconName::User.path())
                                     .w(px(15.0))
                                     .h(px(15.0))
                                     .text_color(rgb(p.text_3)),
@@ -1293,7 +1316,7 @@ impl AppView {
             .border_color(rgb(p.warn_line))
             .child(
                 svg()
-                    .path("icons/warn.svg")
+                    .path(IconName::TriangleAlert.path())
                     .w(px(13.0))
                     .h(px(13.0))
                     .mt(px(1.0))
@@ -1359,7 +1382,7 @@ impl AppView {
         };
 
         let pin = svg()
-            .path("icons/pin.svg")
+            .path(IconName::Map.path())
             .w(px(13.0))
             .h(px(13.0))
             .text_color(rgb(p.text_2));
@@ -2486,10 +2509,15 @@ impl Render for AppView {
             .text_size(px(13.0))
             .text_color(rgb(p.text))
             // 状态栏写着 Ctrl+Enter 立即签到，这里把它真正接上
-            .on_key_down(cx.listener(|this, event: &KeyDownEvent, _window, cx| {
-                if event.keystroke.modifiers.control && event.keystroke.key == "enter" {
+            .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+                let key = event.keystroke.key.as_str();
+                if event.keystroke.modifiers.control && key == "enter" {
                     this.run_now();
                     cx.notify();
+                    return;
+                }
+                if key == "escape" {
+                    this.dismiss_or_hide(window, cx);
                 }
             }))
             .child(self.render_titlebar(p, cx))

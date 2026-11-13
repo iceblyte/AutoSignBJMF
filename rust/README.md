@@ -147,6 +147,26 @@ GPUI 单进程就能同时满足「开窗 55 MB」「关窗后不掉到几百兆
   回归脚本：`python rust/_tools/close_test.py`（拉起 → 发 WM_CLOSE → 断言隐藏且进程存活）
 - 打包：`build/build-rust.ps1`（`-Portable` 额外出一份便携 zip，包内不含任何账号数据）
 
+### 已完成（第十三轮）
+
+对照 ElegantClipboard（同为 gpui + gpui-kit）做了一轮代码审查，落地的改动：
+
+- **图标统一用 gpui-kit 内置的 Lucide 图标集**：`IconName::Settings` / `HardDrive` / `Info` /
+  `Map` / `TriangleAlert` / `User`，删掉自己维护的 7 个 `assets/icons/*.svg`。
+  好处是线条粗细、视觉重心自动一致，不用为每个图标调 viewBox
+- **资源加载补上回退**：`Assets` 原来只认自己的清单，用 `IconName::Settings` 时路径找不到，
+  画出来是空白（`Info` 恰好我们自己也有同名文件所以看着正常）。现在自己的没有就交给
+  `gpui_kit::assets::AllAssets`
+- **Esc 逐层关闭**：下拉浮层 → 弹窗覆盖层 → 都没有就收到托盘（对齐它的 `dismiss_or_hide`）
+
+审查中还确认了几处**它的做法更好、但本轮不改**的地方（改动面大，留作后续）：
+
+| 它的做法 | 我们现在 | 差异 |
+|---|---|---|
+| 托盘命令走 `async_channel`，在 `spawn_in(window)` 里立刻 `handle.update(...)` 更新 UI | 写共享状态，靠 1 秒的 tick 轮询 | 我们的托盘点击最多有 1 秒延迟 |
+| `native_window::set_window_visible(window, false)` 从 `&mut Window` 直接拿 HWND | 枚举顶层窗口 + 缓存句柄 | 它的更直接，不会认错窗口 |
+| 设置页用 `gpui_kit::component` 的 `Switch` / `Checkbox` / `TabBar` | 全部手写 div | 组件带键盘可达性与动画 |
+
 ### 已完成（第十二轮）
 
 - **标题栏三个按钮卡顿**：原来用 `window_control_area`，那是把命中判定交给系统的
