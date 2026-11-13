@@ -6,6 +6,7 @@
 use gpui_kit::base::StyledExt;
 use gpui_kit::prelude::*;
 use gpui_kit::component::switch::Switch;
+use gpui_kit::component::tab::{Tab, TabBar};
 use gpui_kit::component::{Icon, IconName};
 use gpui_kit::{div, px, rgb, AnyElement, App, Context, Div, Hsla};
 
@@ -194,50 +195,42 @@ fn general(view: &mut AppView, p: &Palette, cx: &mut Context<AppView>) -> AnyEle
         })
         .into_any_element();
 
-    // 关窗行为：两段式
-    let mut close_seg = div().flex().gap(px(2.0)).p(px(2.0)).rounded(px(7.0)).bg(rgb(p.surface_3));
-    for (index, text) in ["最小化到托盘", "直接退出"].iter().enumerate() {
-        let active = (index == 0) == minimize;
-        close_seg = close_seg.child(
-            div()
-                .id(("close-mode", index))
-                .px(px(10.0))
-                .py(px(3.0))
-                .rounded(px(5.0))
-                .cursor_pointer()
-                .bg(rgb(if active { p.surface } else { p.surface_3 }))
-                .text_size(px(12.0))
-                .text_color(rgb(if active { p.text } else { p.text_2 }))
-                .on_click(cx.listener(move |view, _, _, cx| {
-                    view.state.settings.minimize_to_tray = index == 0;
-                    let _ = view.state.settings.save(view.state.paths.settings_file());
-                    cx.notify();
-                }))
-                .child(*text),
+    // 关窗行为：TabBar（组件自带键盘左右切换与焦点态）
+    let close_app = cx.entity();
+    let close_seg = TabBar::new("close-mode-tabs")
+        .segmented()
+        .selected_index(if minimize { 0 } else { 1 })
+        .on_click(move |index: &usize, _, cx: &mut App| {
+            let minimize = *index == 0;
+            close_app.update(cx, |view, cx| {
+                view.state.settings.minimize_to_tray = minimize;
+                let _ = view.state.settings.save(view.state.paths.settings_file());
+                cx.notify();
+            });
+        })
+        .children(
+            ["最小化到托盘", "直接退出"]
+                .into_iter()
+                .map(|label| Tab::new().label(label).flex_1()),
         );
-    }
 
-    let mut theme_seg = div().flex().gap(px(2.0)).p(px(2.0)).rounded(px(7.0)).bg(rgb(p.surface_3));
-    for (index, text) in ["浅色", "深色", "跟随系统"].iter().enumerate() {
-        let active = index == theme_index;
-        theme_seg = theme_seg.child(
-            div()
-                .id(("theme-mode", index))
-                .px(px(10.0))
-                .py(px(3.0))
-                .rounded(px(5.0))
-                .cursor_pointer()
-                .bg(rgb(if active { p.surface } else { p.surface_3 }))
-                .text_size(px(12.0))
-                .text_color(rgb(if active { p.text } else { p.text_2 }))
-                .on_click(cx.listener(move |view, _, _, cx| {
-                    view.state.theme = ThemeMode::all()[index];
-                    view.dark = view.state.theme.is_dark(system_is_dark());
-                    cx.notify();
-                }))
-                .child(*text),
+    let theme_app = cx.entity();
+    let theme_seg = TabBar::new("theme-mode-tabs")
+        .segmented()
+        .selected_index(theme_index)
+        .on_click(move |index: &usize, _, cx: &mut App| {
+            let mode = ThemeMode::all()[*index];
+            theme_app.update(cx, |view, cx| {
+                view.state.theme = mode;
+                view.dark = mode.is_dark(system_is_dark());
+                cx.notify();
+            });
+        })
+        .children(
+            ["浅色", "深色", "跟随系统"]
+                .into_iter()
+                .map(|label| Tab::new().label(label).flex_1()),
         );
-    }
 
     pane(p)
         .child(heading("启动与窗口", p))
