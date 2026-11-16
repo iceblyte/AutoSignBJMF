@@ -8,6 +8,19 @@
 )]
 
 mod assets;
+
+/// 界面侧诊断日志：写到临时目录，release（无控制台）也能事后查。
+pub fn ui_debug(message: &str) {
+    use std::io::Write;
+    let path = std::env::temp_dir().join("bjmf-ui-debug.log");
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    {
+        let _ = writeln!(file, "{message}");
+    }
+}
 mod runtime;
 mod state;
 mod system;

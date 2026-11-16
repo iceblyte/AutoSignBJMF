@@ -127,6 +127,8 @@ pub struct AppView {
     pub dropdown_at: Option<(OpenSelect, Pixels, Pixels)>,
     /// 日志区的滚动位置（日志多了要能翻）
     pub log_scroll: ScrollHandle,
+    /// 诊断用：主窗口收到的点击次数
+    pub click_probe: u32,
     /// 是否已经把主题同步给 gpui-kit 的组件（Switch/TabBar 读的是它）
     pub kit_dark: Option<bool>,
     /// 系统标题栏是否已经切到对应明暗（DWM 要等窗口真正创建后再设）
@@ -346,6 +348,7 @@ impl AppView {
             settings_window: None,
             log_scroll: ScrollHandle::new(),
             log_pinned: false,
+            click_probe: 0,
             kit_dark: None,
             titlebar_dark: None,
             titled_windows: Default::default(),
@@ -738,11 +741,11 @@ impl AppView {
             cx.notify();
             return;
         }
-        // 只隐藏，不销毁。
-        // 主窗口和设置窗口共用同一个 entity，销毁其中一个窗口会让整个 app 的消息循环
-        // 卡死（表现：窗口还在，但主界面和托盘全都没反应）。隐藏没有这个问题，
-        // 下次点「设置」再 show 出来即可。
+        // 只隐藏，不销毁：销毁共用同一 entity 的窗口会把整个 app 的消息循环卡死。
         crate::system::win::hide_window(window);
+        // 隐藏后把前台交还主窗口：否则 gpui 可能仍把激活留在被隐藏的设置窗口上，
+        // 主窗口看起来"点不动"（事件进不来）。
+        crate::system::win::show_main_window();
         cx.notify();
     }
 
@@ -2726,6 +2729,16 @@ impl Render for AppView {
                         .child(dropdown_overlay(kind, self, p, cx)),
                 );
         }
+        root = root.on_mouse_down(
+            MouseButton::Left,
+            cx.listener(|this, _, _, _| {
+                this.click_probe = this.click_probe.saturating_add(1);
+                if this.click_probe <= 40 {
+                    crate::ui_debug(&format!("main window click #{}", this.click_probe));
+                }
+            }),
+        );
+
         root.into_any_element()
     }
 }
