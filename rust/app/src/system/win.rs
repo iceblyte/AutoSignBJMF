@@ -173,13 +173,26 @@ pub fn window_hwnd_of(window: &gpui_kit::Window) -> Option<*mut c_void> {
 
 /// 隐藏指定窗口（主窗口「最小化到托盘」用）。
 pub fn hide_window(window: &gpui_kit::Window) -> bool {
+    hide_window_with(window, false)
+}
+
+/// 隐藏主窗口，并把它记进唤醒缓存。
+///
+/// 只有主窗口能写缓存 —— 设置窗口也走 hide 的话，缓存会被它覆盖，
+/// 之后托盘「打开主窗口」就会把设置窗口叫出来。
+pub fn hide_main_window_of(window: &gpui_kit::Window) -> bool {
+    hide_window_with(window, true)
+}
+
+fn hide_window_with(window: &gpui_kit::Window, remember: bool) -> bool {
     let Some(hwnd) = window_hwnd_of(window) else {
         return false;
     };
-    // 一定要记进缓存：窗口一旦隐藏，EnumWindows 就找不到它了，
-    // 之后托盘「打开主窗口」只能靠这个句柄唤回。
-    if let Ok(mut guard) = cache().lock() {
-        *guard = Some(hwnd as isize);
+    if remember {
+        // 窗口一旦隐藏，EnumWindows 就找不到它了，唤回只能靠这个句柄
+        if let Ok(mut guard) = cache().lock() {
+            *guard = Some(hwnd as isize);
+        }
     }
     unsafe { ShowWindow(hwnd, SW_HIDE) != 0 }
 }

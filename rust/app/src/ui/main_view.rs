@@ -133,8 +133,6 @@ pub struct AppView {
     pub titlebar_dark: Option<bool>,
     /// 已经设过标题栏配色的窗口（主窗口自绘，设置窗口是系统标题栏）
     pub titled_windows: std::collections::HashSet<WindowId>,
-    /// 待关闭的设置窗口：不在按钮回调里同步 remove_window
-    pub pending_close_settings: Option<WindowId>,
     /// 是否已经做过一次「首次贴底」（首帧布局没完成时滚不动）
     pub log_pinned: bool,
     focus: Vec<FocusHandle>,
@@ -213,11 +211,18 @@ impl AppView {
                     cx.background_executor()
                         .timer(std::time::Duration::from_secs(5))
                         .await;
-                    // 先把设置窗口关掉（走 close_settings 的实质路径：交给 tick 销毁）
+                    // 先把设置窗口关掉（现在是隐藏，不再销毁）
                     let _ = this.update(cx, |view, cx| {
                         if let Some(id) = view.settings_window {
-                            view.settings_window = None;
-                            view.pending_close_settings = Some(id);
+                            if let Some(handle) = cx
+                                .windows()
+                                .into_iter()
+                                .find(|handle| handle.window_id() == id)
+                            {
+                                let _ = handle.update(cx, |_, window, _| {
+                                    crate::system::win::hide_window(window);
+                                });
+                            }
                         }
                         cx.notify();
                     });
@@ -344,7 +349,6 @@ impl AppView {
             kit_dark: None,
             titlebar_dark: None,
             titled_windows: Default::default(),
-            pending_close_settings: None,
             focus,
             close_hint_muted: false,
             close_signal: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
@@ -511,15 +515,6 @@ impl AppView {
     }
 
     pub fn tick(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(id) = self.pending_close_settings.take() {
-            if let Some(handle) = cx
-                .windows()
-                .into_iter()
-                .find(|handle| handle.window_id() == id)
-            {
-                let _ = handle.update(cx, |_, window, _| window.remove_window());
-            }
-        }
         self.sync_kit_theme(cx);
         // 系统标题栏由 DWM 绘制，要等窗口真正创建好才能设（构造时还没有 HWND）
         if self.titlebar_dark != Some(self.dark) {
@@ -550,7 +545,7 @@ impl AppView {
         {
             if self.state.settings.minimize_to_tray {
                 // 直接拿这个窗口的 HWND，不再靠枚举（不会认错窗口）
-                crate::system::win::hide_window(window);
+                crate::system::win::hide_main_window_of(window);
                 self.state.log(LogKind::Info, "窗口已隐藏到托盘，签到继续在后台运行");
                 // 关闭就是安静地收到托盘：已经有托盘图标和日志，不再弹提示窗
             } else {
@@ -735,21 +730,19 @@ impl AppView {
     /// 关闭设置窗口（设置页里的「完成」与标题栏 ✕ 都走这里）。
     pub fn close_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let id = window.window_handle().window_id();
-        // 主窗口与设置窗口用的是同一个 entity，绝不能闭眼 remove_window：
-        // 一旦删掉主窗口，绑在它上面的托盘事件任务会一起被取消，
-        // 之后点托盘任何一项都没反应（连退出都不响应）。
-        if self.settings_window == Some(id) {
-            self.settings_window = None;
-            // 不在按钮回调里直接 destroy：gpui 的 remove_window 会同步销毁窗口，
-            // 在事件派发栈里做容易把整个 app 的消息循环卡住（表现是窗口还在但全无响应，
-            // 连托盘菜单都点不动）。交给下一次 tick 执行。
-            self.pending_close_settings = Some(id);
-        } else {
+        if self.settings_window != Some(id) {
             self.state.log(
                 LogKind::Warn,
                 "关闭设置窗口被忽略：当前不是设置窗口".to_string(),
             );
+            cx.notify();
+            return;
         }
+        // 只隐藏，不销毁。
+        // 主窗口和设置窗口共用同一个 entity，销毁其中一个窗口会让整个 app 的消息循环
+        // 卡死（表现：窗口还在，但主界面和托盘全都没反应）。隐藏没有这个问题，
+        // 下次点「设置」再 show 出来即可。
+        crate::system::win::hide_window(window);
         cx.notify();
     }
 
