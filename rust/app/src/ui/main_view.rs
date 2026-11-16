@@ -127,6 +127,8 @@ pub struct AppView {
     pub dropdown_at: Option<(OpenSelect, Pixels, Pixels)>,
     /// 日志区的滚动位置（日志多了要能翻）
     pub log_scroll: ScrollHandle,
+    /// 诊断用：tick 跑过的次数（判断主循环是否还活着）
+    pub tick_count: u64,
     /// 诊断用：主窗口收到的点击次数
     pub click_probe: u32,
     /// 是否已经把主题同步给 gpui-kit 的组件（Switch/TabBar 读的是它）
@@ -348,6 +350,7 @@ impl AppView {
             settings_window: None,
             log_scroll: ScrollHandle::new(),
             log_pinned: false,
+            tick_count: 0,
             click_probe: 0,
             kit_dark: None,
             titlebar_dark: None,
@@ -372,6 +375,65 @@ impl AppView {
                 view.dropdown_at = Some((selected, px(430.0), px(430.0)));
             }
         }
+        // QA：AUTOSIGN_TEST_SCENE=1 复现用户操作序列
+        // 开设置 → 隐藏设置 → 隐藏主窗口 → 再开设置（应能弹出）
+        if std::env::var("AUTOSIGN_TEST_SCENE").is_ok() {
+            cx.spawn(async move |this, cx| {
+                cx.background_executor()
+                    .timer(std::time::Duration::from_millis(3000))
+                    .await;
+                let _ = this.update(cx, |view, cx| view.open_settings(cx));
+                crate::ui_debug("SCENE: 1 settings opened");
+
+                cx.background_executor()
+                    .timer(std::time::Duration::from_millis(3000))
+                    .await;
+                let _ = this.update(cx, |view, cx| {
+                    if let Some(id) = view.settings_window {
+                        if let Some(handle) =
+                            cx.windows().into_iter().find(|h| h.window_id() == id)
+                        {
+                            let _ = handle.update(cx, |_, window, _| {
+                                crate::system::win::hide_window(window);
+                            });
+                        }
+                    }
+                    cx.notify();
+                });
+                crate::ui_debug("SCENE: 2 settings hidden");
+
+                cx.background_executor()
+                    .timer(std::time::Duration::from_millis(3000))
+                    .await;
+                let _ = this.update(cx, |view, cx| {
+                    view.close_signal
+                        .store(true, std::sync::atomic::Ordering::SeqCst);
+                    cx.notify();
+                });
+                crate::ui_debug("SCENE: 3 main closed");
+
+                cx.background_executor()
+                    .timer(std::time::Duration::from_millis(4000))
+                    .await;
+                // 走真实路径：托盘命令 → 消费任务 → apply_tray_command
+                let result = this.update(cx, |view, cx| {
+                    let sent = view
+                        .runtime
+                        .send_tray_command(crate::system::tray::TrayCommand::Settings);
+                    // 顺便验证：主窗口隐藏后，这个 entity 还能不能被更新
+                    let probe = view.tick_probe();
+                    (sent, probe, cx.entity())
+                });
+                match &result {
+                    Ok((sent, probe, _)) => {
+                        crate::ui_debug(&format!("SCENE: 4 update ok, sent={sent}, tick={probe}"))
+                    }
+                    Err(_) => crate::ui_debug("SCENE: 4 update FAILED (entity 不可更新)"),
+                }
+            })
+            .detach();
+        }
+
         // QA：AUTOSIGN_THEME=dark 强制深色，用来截图核对主题
         if std::env::var("AUTOSIGN_THEME").as_deref() == Ok("dark") {
             view.dark = true;
@@ -396,16 +458,19 @@ impl AppView {
     ///
     /// 之前是「托盘写共享标志 → 主线程每秒 tick 读一次」，点了最坏要等 1 秒，
     /// 手感上就像没反应。改成 async_channel 之后是即时的。
-    fn spawn_tray_events(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    fn spawn_tray_events(&mut self, cx: &mut Context<Self>) {
         let Some(receiver) = self.runtime.take_tray_events() else {
             return;
         };
-        cx.spawn_in(window, async move |this, cx| {
+        // 同样不绑窗口：主窗口隐藏后 update_in 会失败，命令会被静默丢弃
+        cx.spawn(async move |this, cx| {
             while let Ok(command) = receiver.recv().await {
-                // update_in 带 window：处理「打开主窗口」时能直接操作自己的 HWND
-                let _ = this.update_in(cx, |view, window, cx| {
-                    view.apply_tray_command(command, window, cx);
-                });
+                if this
+                    .update(cx, |view, cx| view.apply_tray_command(command, cx))
+                    .is_err()
+                {
+                    break;
+                }
             }
         })
         .detach();
@@ -415,22 +480,18 @@ impl AppView {
     fn apply_tray_command(
         &mut self,
         command: crate::system::tray::TrayCommand,
-        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         use crate::system::tray::TrayCommand;
+        crate::ui_debug(&format!("apply_tray_command: {command:?}"));
         match command {
             TrayCommand::Open => {
-                // 注意：不能用 window.show——窗口被隐藏后，这条异步任务拿到的
-                // Window 已经唤不醒它（上一版就是这么坏掉的）。
-                // show_main_window 走缓存的 HWND，隐藏状态下依然有效。
-                let _ = window;
+                // 走缓存的 HWND：隐藏状态下依然有效
                 crate::system::win::show_main_window();
                 self.overlay = Overlay::None;
             }
             TrayCommand::Settings => {
-                // 只弹设置页：主窗口该藏着就继续藏着（window 参数这里用不上了）
-                let _ = window;
+                // 只弹设置页：主窗口该藏着就继续藏着
                 self.open_settings(cx);
             }
             TrayCommand::RunNow => {
@@ -466,22 +527,25 @@ impl AppView {
         cx.notify();
     }
 
-    pub fn start_ticker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.spawn_tray_events(window, cx);
-        cx.spawn_in(window, async move |this, cx| {
+    pub fn start_ticker(&mut self, cx: &mut Context<Self>) {
+        self.spawn_tray_events(cx);
+        // 用 App 级 spawn，不绑窗口：
+        // 绑窗口的 spawn_in 在主窗口隐藏后会 update_in 失败，tick 直接停，
+        // 表现就是「最小化到托盘后所有界面逻辑都不走了」。
+        cx.spawn(async move |this, cx| {
             loop {
                 cx.background_executor()
                     .timer(std::time::Duration::from_millis(1000))
                     .await;
-                // update_in 能拿到 window，隐藏窗口时就能直接用它自己的句柄
-                if this
-                    .update_in(cx, |view, window, cx| {
-                        view.tick(window, cx);
-                        cx.notify();
-                    })
-                    .is_err()
-                {
-                    break;
+                match this.update(cx, |view, cx| {
+                    view.tick(cx);
+                    cx.notify();
+                }) {
+                    Ok(()) => {}
+                    Err(error) => {
+                        crate::ui_debug(&format!("ticker: update failed: {error}"));
+                        break;
+                    }
                 }
             }
         })
@@ -517,12 +581,21 @@ impl AppView {
         true
     }
 
-    pub fn tick(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.sync_kit_theme(cx);
-        // 系统标题栏由 DWM 绘制，要等窗口真正创建好才能设（构造时还没有 HWND）
-        if self.titlebar_dark != Some(self.dark) {
-            self.titlebar_dark = Some(self.dark);
-            crate::system::win::set_dark_titlebar(window, self.dark);
+    /// 诊断用：看一眼 tick 是否还在跑。
+    fn tick_probe(&self) -> u64 {
+        self.tick_count
+    }
+
+    pub fn tick(&mut self, cx: &mut Context<Self>) {
+        self.tick_count = self.tick_count.saturating_add(1);
+        if self.sync_kit_theme(cx) {
+            // 标题栏由 DWM 画：这里没有 window 引用，遍历所有窗口逐个设置
+            let dark = self.dark;
+            for handle in cx.windows() {
+                let _ = handle.update(cx, |_, window, _| {
+                    crate::system::win::set_dark_titlebar(window, dark);
+                });
+            }
         }
         let (running, paused, next, last_exit) = self.runtime.snapshot();
         self.state.running = running;
@@ -547,8 +620,8 @@ impl AppView {
             .swap(false, std::sync::atomic::Ordering::SeqCst)
         {
             if self.state.settings.minimize_to_tray {
-                // 直接拿这个窗口的 HWND，不再靠枚举（不会认错窗口）
-                crate::system::win::hide_main_window_of(window);
+                // 这里没有 window 引用，用缓存的主窗口句柄（隐藏前会先枚举并记住）
+                crate::system::win::hide_main_window();
                 self.state.log(LogKind::Info, "窗口已隐藏到托盘，签到继续在后台运行");
                 // 关闭就是安静地收到托盘：已经有托盘图标和日志，不再弹提示窗
             } else {
@@ -685,16 +758,33 @@ impl AppView {
     /// 而此时 entity 正在被 update —— 直接调用会 panic（already being updated）。
     /// 所以统一走「spawn 一次 + AsyncApp::update」，在借用释放后再开窗。
     pub fn open_settings(&mut self, cx: &mut Context<Self>) {
+        // 复用已有窗口这条路必须整体放到独立任务里：
+        // 托盘命令是在 entity 的 update 闭包里调的，此时再调 cx.windows() 或
+        // 对同一 entity 再 update 一次都会 panic，而 panic 会直接带走整个托盘消费任务
+        // —— 表现就是「点设置毫无反应，之后所有菜单项也跟着失效」。
         if let Some(id) = self.settings_window {
-            if let Some(handle) = cx
-                .windows()
-                .into_iter()
-                .find(|handle| handle.window_id() == id)
-            {
-                let _ = handle.update(cx, |_, window, _| window.activate_window());
-                return;
-            }
-            self.settings_window = None;
+            crate::ui_debug(&format!("open_settings: deferred reuse id={id:?}"));
+            cx.spawn(async move |_this, cx| {
+                cx.background_executor()
+                    .timer(std::time::Duration::from_millis(16))
+                    .await;
+                let existing = cx.update(|app| {
+                    app.windows()
+                        .into_iter()
+                        .find(|handle| handle.window_id() == id)
+                });
+                if let Some(handle) = existing {
+                    let _ = handle.update(cx, |_, window, _| {
+                        crate::system::win::show_window(window);
+                        window.activate_window();
+                    });
+                    crate::ui_debug("open_settings: reused window shown");
+                } else {
+                    crate::ui_debug("open_settings: window gone, will recreate on next call");
+                }
+            })
+            .detach();
+            return;
         }
 
         let options = WindowOptions {
@@ -718,7 +808,12 @@ impl AppView {
             let Some(entity) = this.upgrade() else {
                 return;
             };
+            crate::ui_debug("open_settings: creating window");
             let opened = cx.update(|app| app.open_window(options, move |_, _| entity.clone()));
+            match &opened {
+                Ok(_) => crate::ui_debug("open_settings: created ok"),
+                Err(error) => crate::ui_debug(&format!("open_settings: create failed: {error}")),
+            }
             if let Ok(handle) = opened {
                 let id = handle.window_id();
                 let _ = this.update(cx, |view, cx| {

@@ -104,7 +104,8 @@ fn main() {
         let handle = open_window(options, cx, move |window, cx| {
             cx.new(|cx| {
                 let mut view = AppView::new(state, runtime.clone(), cx);
-                view.start_ticker(window, cx);
+                let _ = window;
+                view.start_ticker(cx);
                 view
             })
         })

@@ -217,6 +217,14 @@ pub fn show_window(window: &gpui_kit::Window) -> bool {
     }
 }
 
+/// 这个窗口当前是否可见（隐藏 / 最小化都算不可见）。
+pub fn window_is_visible(window: &gpui_kit::Window) -> bool {
+    match window_hwnd_of(window) {
+        Some(hwnd) => unsafe { IsWindowVisible(hwnd) != 0 },
+        None => false,
+    }
+}
+
 /// 让系统标题栏跟随明暗（否则深色内容配白色标题栏很割裂）。
 pub fn set_dark_titlebar(window: &gpui_kit::Window, dark: bool) {
     use windows_sys::Win32::Graphics::Dwm::{DwmSetWindowAttribute, DWMWA_USE_IMMERSIVE_DARK_MODE};
