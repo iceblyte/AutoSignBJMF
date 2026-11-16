@@ -173,10 +173,15 @@ pub fn window_hwnd_of(window: &gpui_kit::Window) -> Option<*mut c_void> {
 
 /// 隐藏指定窗口（主窗口「最小化到托盘」用）。
 pub fn hide_window(window: &gpui_kit::Window) -> bool {
-    match window_hwnd_of(window) {
-        Some(hwnd) => unsafe { ShowWindow(hwnd, SW_HIDE) != 0 },
-        None => false,
+    let Some(hwnd) = window_hwnd_of(window) else {
+        return false;
+    };
+    // 一定要记进缓存：窗口一旦隐藏，EnumWindows 就找不到它了，
+    // 之后托盘「打开主窗口」只能靠这个句柄唤回。
+    if let Ok(mut guard) = cache().lock() {
+        *guard = Some(hwnd as isize);
     }
+    unsafe { ShowWindow(hwnd, SW_HIDE) != 0 }
 }
 
 /// 把指定窗口显示出来，最小化的先还原。
@@ -184,6 +189,9 @@ pub fn show_window(window: &gpui_kit::Window) -> bool {
     let Some(hwnd) = window_hwnd_of(window) else {
         return false;
     };
+    if let Ok(mut guard) = cache().lock() {
+        *guard = Some(hwnd as isize);
+    }
     unsafe {
         let command = if IsIconic(hwnd) != 0 {
             SW_RESTORE
@@ -193,6 +201,44 @@ pub fn show_window(window: &gpui_kit::Window) -> bool {
         ShowWindow(hwnd, command);
         SetForegroundWindow(hwnd);
         true
+    }
+}
+
+/// 让系统标题栏跟随明暗（否则深色内容配白色标题栏很割裂）。
+pub fn set_dark_titlebar(window: &gpui_kit::Window, dark: bool) {
+    use windows_sys::Win32::Graphics::Dwm::{DwmSetWindowAttribute, DWMWA_USE_IMMERSIVE_DARK_MODE};
+    let Some(hwnd) = window_hwnd_of(window) else {
+        return;
+    };
+    let value: i32 = if dark { 1 } else { 0 };
+    let size = std::mem::size_of::<i32>() as u32;
+    unsafe {
+        // 20 是 Win10 20H1 之后的属性号；更早的版本是 19。两个都试，失败就退。
+        let first = DwmSetWindowAttribute(
+            hwnd,
+            DWMWA_USE_IMMERSIVE_DARK_MODE as u32,
+            &value as *const i32 as *const c_void,
+            size,
+        );
+        if first != 0 {
+            DwmSetWindowAttribute(hwnd, 19, &value as *const i32 as *const c_void, size);
+        }
+        // 切完让窗口重画一次标题栏
+        let mut rect: RECT = std::mem::zeroed();
+        if GetWindowRect(hwnd, &mut rect) != 0 {
+            use windows_sys::Win32::UI::WindowsAndMessaging::{
+                SetWindowPos, SWP_FRAMECHANGED, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER,
+            };
+            SetWindowPos(
+                hwnd,
+                std::ptr::null_mut(),
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED,
+            );
+        }
     }
 }
 

@@ -73,7 +73,11 @@ fn main() {
             origin: point(px(120.0), px(80.0)),
             size: size(px(theme::WINDOW_W), px(theme::WINDOW_H)),
         })),
+        // 客户端装饰：不要系统标题栏，整条标题栏由我们自己画
+        // （否则深色模式下系统会盖一层浅色背景，怎么调 DWM 都不对）
+        window_decorations: Some(gpui_kit::WindowDecorations::Client),
         titlebar: Some(TitlebarOptions {
+            // 标题仍要有：任务栏与截图工具都靠它认窗口（客户端装饰下不会画出来）
             title: Some(WINDOW_TITLE.into()),
             appears_transparent: true,
             traffic_light_position: None,

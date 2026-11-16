@@ -127,6 +127,12 @@ pub struct AppView {
     pub dropdown_at: Option<(OpenSelect, Pixels, Pixels)>,
     /// 日志区的滚动位置（日志多了要能翻）
     pub log_scroll: ScrollHandle,
+    /// 是否已经把主题同步给 gpui-kit 的组件（Switch/TabBar 读的是它）
+    pub kit_dark: Option<bool>,
+    /// 系统标题栏是否已经切到对应明暗（DWM 要等窗口真正创建后再设）
+    pub titlebar_dark: Option<bool>,
+    /// 已经设过标题栏配色的窗口（主窗口自绘，设置窗口是系统标题栏）
+    pub titled_windows: std::collections::HashSet<WindowId>,
     /// 是否已经做过一次「首次贴底」（首帧布局没完成时滚不动）
     pub log_pinned: bool,
     focus: Vec<FocusHandle>,
@@ -310,6 +316,9 @@ impl AppView {
             settings_window: None,
             log_scroll: ScrollHandle::new(),
             log_pinned: false,
+            kit_dark: None,
+            titlebar_dark: None,
+            titled_windows: Default::default(),
             focus,
             close_hint_muted: false,
             close_signal: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
@@ -330,6 +339,12 @@ impl AppView {
                 view.dropdown_at = Some((selected, px(430.0), px(430.0)));
             }
         }
+        // QA：AUTOSIGN_THEME=dark 强制深色，用来截图核对主题
+        if std::env::var("AUTOSIGN_THEME").as_deref() == Ok("dark") {
+            view.dark = true;
+        }
+        let _ = view.sync_kit_theme(cx);
+
         // QA：等实体构造完成再开设置窗口，否则会撞上「entity 正在被更新」
         if let Ok(open) = std::env::var("AUTOSIGN_OPEN") {
             let want_data = open == "data";
@@ -373,7 +388,11 @@ impl AppView {
         use crate::system::tray::TrayCommand;
         match command {
             TrayCommand::Open => {
-                crate::system::win::show_window(window);
+                // 注意：不能用 window.show——窗口被隐藏后，这条异步任务拿到的
+                // Window 已经唤不醒它（上一版就是这么坏掉的）。
+                // show_main_window 走缓存的 HWND，隐藏状态下依然有效。
+                let _ = window;
+                crate::system::win::show_main_window();
                 self.overlay = Overlay::None;
             }
             TrayCommand::Settings => {
@@ -437,7 +456,35 @@ impl AppView {
     }
 
     /// 同步一次后台状态。
+    /// 把明暗状态同步给 gpui-kit 的全局主题。
+    ///
+    /// Switch / TabBar 这些组件读的是 `cx.theme()`，不是我们的 Palette。
+    /// 不同步的话，深色模式下组件仍然是浅色配色（白底选中块、深色文字），
+    /// 在深色面板上非常刺眼。
+    pub fn sync_kit_theme(&mut self, cx: &mut App) -> bool {
+        if self.kit_dark == Some(self.dark) {
+            return false;
+        }
+        self.kit_dark = Some(self.dark);
+        let mode = if self.dark {
+            gpui_kit::component::ThemeMode::Dark
+        } else {
+            gpui_kit::component::ThemeMode::Light
+        };
+        gpui_kit::component::Theme::change(mode, None, cx);
+        // 明暗变了，两个窗口的标题栏都要重设
+        self.titled_windows.clear();
+        self.titlebar_dark = None;
+        true
+    }
+
     pub fn tick(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.sync_kit_theme(cx);
+        // 系统标题栏由 DWM 绘制，要等窗口真正创建好才能设（构造时还没有 HWND）
+        if self.titlebar_dark != Some(self.dark) {
+            self.titlebar_dark = Some(self.dark);
+            crate::system::win::set_dark_titlebar(window, self.dark);
+        }
         let (running, paused, next, last_exit) = self.runtime.snapshot();
         self.state.running = running;
         self.state.paused = paused;
@@ -924,7 +971,6 @@ impl AppView {
                     .child(pill(text, fg, bg, border, true)),
             )
             .child(window_button(WindowButton::Min, p, cx))
-            .child(window_button(WindowButton::Max, p, cx))
             .child(window_button(WindowButton::Close, p, cx))
             .into_any_element()
     }
@@ -2114,7 +2160,6 @@ impl AppView {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WindowButton {
     Min,
-    Max,
     Close,
 }
 
@@ -2126,7 +2171,6 @@ pub enum WindowButton {
 fn window_button(kind: WindowButton, p: &Palette, cx: &mut Context<AppView>) -> AnyElement {
     let (glyph, danger) = match kind {
         WindowButton::Min => ("─", false),
-        WindowButton::Max => ("□", false),
         WindowButton::Close => ("✕", true),
     };
     let hover_fg = if danger { 0xffffff } else { p.text };
@@ -2134,7 +2178,6 @@ fn window_button(kind: WindowButton, p: &Palette, cx: &mut Context<AppView>) -> 
     div()
         .id(match kind {
             WindowButton::Min => "win-min",
-            WindowButton::Max => "win-max",
             WindowButton::Close => "win-close",
         })
         .w(px(WINDOW_BTN_W))
@@ -2154,14 +2197,6 @@ fn window_button(kind: WindowButton, p: &Palette, cx: &mut Context<AppView>) -> 
         })
         .on_click(cx.listener(move |this, _, window, cx| match kind {
             WindowButton::Min => window.minimize_window(),
-            WindowButton::Max => {
-                if window.is_maximized() {
-                    // gpui 的 zoom 在 Windows 上只会放大，缩小得自己调 SW_RESTORE
-                    crate::system::win::restore_window(window);
-                } else {
-                    window.zoom_window();
-                }
-            }
             WindowButton::Close => {
                 // 关闭 = 交给原来的「最小化到托盘」流程，别直接销毁窗口
                 this.close_signal
@@ -2575,8 +2610,14 @@ impl Render for AppView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let p = self.palette();
 
+        // 设置窗口用的是系统标题栏，得单独告诉 DWM 用深色（主窗口是我们自绘的，不需要）
+        let window_id = window.window_handle().window_id();
+        if self.titled_windows.insert(window_id) {
+            crate::system::win::set_dark_titlebar(window, self.dark);
+        }
+
         // 同一个 entity 在两个窗口里渲染：靠窗口句柄区分画主界面还是设置页
-        if self.settings_window == Some(window.window_handle().window_id()) {
+        if self.settings_window == Some(window_id) {
             return crate::ui::settings::render(self, p, cx);
         }
 

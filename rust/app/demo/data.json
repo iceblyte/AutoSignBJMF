@@ -8,7 +8,8 @@
       "acc": "30",
       "cookie": "remember_student_9f8e=demo-token-a",
       "QmsgKEY": "",
-      "WXKey": "SCT1234567890abcd"
+      "WXKey": "SCT1234567890abcd",
+      "QmsgNoticeOn": false
     },
     {
       "name": "林可欣",
