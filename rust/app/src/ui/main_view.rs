@@ -22,7 +22,7 @@ use gpui_kit::assets::IconNamed;
 use gpui_kit::component::switch::Switch;
 use gpui_kit::component::IconName;
 
-use crate::state::{AccountStatus, AppState, LogKind, PillTone};
+use crate::state::{mask_key, AccountStatus, AppState, LogKind, PillTone};
 use crate::theme::*;
 use crate::ui::widgets::*;
 
@@ -71,6 +71,10 @@ pub enum Overlay {
     CloseHint,
     /// 添加执行时间：从列表点选，不手输
     TimePicker,
+    /// 编辑通知渠道的密钥（微信 / QQ）
+    ChannelEdit(Field),
+    /// 查看通知渠道的密钥（打码显示）
+    ChannelView(Field),
 }
 
 /// 当前展开了哪个下拉列表（同一时刻只允许一个）。
@@ -87,6 +91,28 @@ pub enum OpenSelect {
 
 /// 重试间隔的常用值（分钟），避免 60 个选项把列表拉太长。
 pub const RETRY_DELAYS: [u32; 10] = [1, 2, 3, 5, 10, 15, 20, 30, 45, 60];
+
+/// 下拉列表的列宽 / 行高 / 内边距。
+const DD_COL_W: f32 = 120.0;
+const DD_ROW_H: f32 = 26.0;
+const DD_PAD: f32 = 4.0;
+
+/// 每种下拉的 `(项数, 列数)`：项多就分列，别让列表跑到窗口外面去。
+pub fn dropdown_layout(kind: OpenSelect) -> (usize, usize) {
+    match kind {
+        OpenSelect::RetryAttempts => (10, 1),
+        OpenSelect::RetryDelay => (RETRY_DELAYS.len(), 1),
+        OpenSelect::Hour => (24, 2),
+        OpenSelect::Minute => (12, 2),
+        OpenSelect::None => (0, 1),
+    }
+}
+
+/// 给定列数的列表宽度。
+pub fn dropdown_width(columns: usize) -> f32 {
+    let columns = columns.max(1) as f32;
+    columns * DD_COL_W + (columns - 1.0) * 2.0 + DD_PAD * 2.0
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SettingsTab {
@@ -120,13 +146,26 @@ pub struct AppView {
     pub open_select: OpenSelect,
     /// 设置窗口的句柄：有了它就说明设置已经开着（同一时刻只允许一个）。
     pub settings_window: Option<WindowId>,
+    /// 正在开窗中：双击「设置」时不至于开出两个窗口
+    pub settings_opening: bool,
+    /// 主窗口的句柄：同一个 entity 会在两个窗口里渲染，靠它区分画哪个界面。
+    pub main_window_id: Option<WindowId>,
+    /// 主窗口当前是否被藏到了托盘（主题刷新后要恢复原样）。
+    pub main_hidden: bool,
+    /// 拖动窗口中的偏移（光标相对窗口左上角），`None` 表示没在拖。
+    pub window_drag: Option<(f32, f32)>,
     /// 展开中的下拉浮层的左上角（窗口坐标）。
     ///
     /// 列表必须画在根层：主界面 body 和弹窗都是 overflow_hidden，
     /// 放在原地展开会把窗口撑高，或者被裁掉一半。
     pub dropdown_at: Option<(OpenSelect, Pixels, Pixels)>,
+    /// 展开中的下拉浮层的实际矩形 `(x, y, 宽, 高)`：
+    /// 遮罩要靠它判断「这次点击落在列表里还是外面」。
+    pub dropdown_rect: Option<(f32, f32, f32, f32)>,
     /// 日志区的滚动位置（日志多了要能翻）
     pub log_scroll: ScrollHandle,
+    /// 上一次渲染时看到的日志版本号：变了就把日志区贴底。
+    pub log_revision_seen: Option<u64>,
     /// 诊断用：tick 跑过的次数（判断主循环是否还活着）
     pub tick_count: u64,
     /// 诊断用：主窗口收到的点击次数
@@ -137,8 +176,6 @@ pub struct AppView {
     pub titlebar_dark: Option<bool>,
     /// 已经设过标题栏配色的窗口（主窗口自绘，设置窗口是系统标题栏）
     pub titled_windows: std::collections::HashSet<WindowId>,
-    /// 是否已经做过一次「首次贴底」（首帧布局没完成时滚不动）
-    pub log_pinned: bool,
     focus: Vec<FocusHandle>,
     /// 关窗提示勾了「不再提示」
     pub close_hint_muted: bool,
@@ -150,6 +187,7 @@ impl AppView {
     pub fn new(
         state: AppState,
         runtime: std::sync::Arc<crate::runtime::Runtime>,
+        main_window_id: WindowId,
         cx: &mut Context<Self>,
     ) -> Self {
         let dark = ThemeMode::System.is_dark(system_is_dark());
@@ -347,9 +385,14 @@ impl AppView {
             picker_minute,
             open_select: OpenSelect::None,
             dropdown_at: None,
+            dropdown_rect: None,
             settings_window: None,
+            settings_opening: false,
+            main_window_id: Some(main_window_id),
+            main_hidden: false,
+            window_drag: None,
             log_scroll: ScrollHandle::new(),
-            log_pinned: false,
+            log_revision_seen: None,
             tick_count: 0,
             click_probe: 0,
             kit_dark: None,
@@ -371,8 +414,16 @@ impl AppView {
             };
             view.open_select = selected;
             if selected != OpenSelect::None {
-                // 浮层需要位置，这里给一个固定点用于截图
+                // 浮层需要位置，这里给一个固定点用于截图（没有 window 可量，按固定值摆）
+                let (count, columns) = dropdown_layout(selected);
+                let rows = count.div_ceil(columns.max(1));
                 view.dropdown_at = Some((selected, px(430.0), px(430.0)));
+                view.dropdown_rect = Some((
+                    430.0,
+                    430.0,
+                    dropdown_width(columns),
+                    rows as f32 * DD_ROW_H + DD_PAD * 2.0 + 2.0,
+                ));
             }
         }
         // QA：AUTOSIGN_TEST_SCENE=1 复现用户操作序列
@@ -488,6 +539,7 @@ impl AppView {
             TrayCommand::Open => {
                 // 走缓存的 HWND：隐藏状态下依然有效
                 crate::system::win::show_main_window();
+                self.main_hidden = false;
                 self.overlay = Overlay::None;
             }
             TrayCommand::Settings => {
@@ -602,19 +654,15 @@ impl AppView {
         self.state.paused = paused;
         self.state.next_run_at = next;
         self.state.last_exit = last_exit;
-        let before = self.state.logs.len();
         for (kind, line) in self.runtime.drain() {
             self.state.log(kind, line);
-        }
-        if self.state.logs.len() != before || !self.log_pinned {
-            // 有新日志就跟着滚到底；第一次 tick 再补滚一次（首帧布局还没完成时滚不动）
-            self.log_pinned = true;
-            self.log_scroll.scroll_to_bottom();
         }
         if matches!(self.overlay, Overlay::Qr) {
             crate::ui::qr_modal::poll(self);
         }
-        // 关窗：默认隐藏到托盘（调度继续跑），选了「直接退出」才真退出
+        // 关窗兜底：系统关窗（Alt+F4 / 任务栏关闭）没有 Window 引用，
+        // 由 main.rs 的 should_close 回调置标志，这里收尾。
+        // 点 ✕ 与 Esc 已经在 request_close 里当场处理，不会走到这里。
         if self
             .close_signal
             .swap(false, std::sync::atomic::Ordering::SeqCst)
@@ -622,6 +670,7 @@ impl AppView {
             if self.state.settings.minimize_to_tray {
                 // 这里没有 window 引用，用缓存的主窗口句柄（隐藏前会先枚举并记住）
                 crate::system::win::hide_main_window();
+                self.main_hidden = true;
                 self.state.log(LogKind::Info, "窗口已隐藏到托盘，签到继续在后台运行");
                 // 关闭就是安静地收到托盘：已经有托盘图标和日志，不再弹提示窗
             } else {
@@ -757,40 +806,23 @@ impl AppView {
     /// 开窗必须放到事件回调之外：`open_window` 会立刻渲染这个 View，
     /// 而此时 entity 正在被 update —— 直接调用会 panic（already being updated）。
     /// 所以统一走「spawn 一次 + AsyncApp::update」，在借用释放后再开窗。
+    ///
+    /// 这里同时兜住一个老 bug：设置窗口如果被系统回收（或渲染失败没建起来），
+    /// 记录里的 `settings_window` 会变成一个不存在的 id，之后每次点设置都走
+    /// 「复用已有窗口」这条岔路、永远找不到 → 表现就是「设置再也打不开」。
+    /// 现在查不到就把记录清掉并重建。
     pub fn open_settings(&mut self, cx: &mut Context<Self>) {
-        // 复用已有窗口这条路必须整体放到独立任务里：
-        // 托盘命令是在 entity 的 update 闭包里调的，此时再调 cx.windows() 或
-        // 对同一 entity 再 update 一次都会 panic，而 panic 会直接带走整个托盘消费任务
-        // —— 表现就是「点设置毫无反应，之后所有菜单项也跟着失效」。
-        if let Some(id) = self.settings_window {
-            crate::ui_debug(&format!("open_settings: deferred reuse id={id:?}"));
-            cx.spawn(async move |_this, cx| {
-                cx.background_executor()
-                    .timer(std::time::Duration::from_millis(16))
-                    .await;
-                let existing = cx.update(|app| {
-                    app.windows()
-                        .into_iter()
-                        .find(|handle| handle.window_id() == id)
-                });
-                if let Some(handle) = existing {
-                    let _ = handle.update(cx, |_, window, _| {
-                        crate::system::win::show_window(window);
-                        window.activate_window();
-                    });
-                    crate::ui_debug("open_settings: reused window shown");
-                } else {
-                    crate::ui_debug("open_settings: window gone, will recreate on next call");
-                }
-            })
-            .detach();
+        // 开窗要走一次异步任务，连点两下会开出两个窗口（第二个会把记录覆盖掉，
+        // 留下一个没人管的孤儿设置窗口），这里用标记挡住。
+        if self.settings_opening {
             return;
         }
+        self.settings_opening = true;
 
         let options = WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(Bounds {
                 origin: point(px(260.0), px(180.0)),
-                size: size(px(860.0), px(560.0)),
+                size: size(px(SETTINGS_W), px(SETTINGS_H)),
             })),
             titlebar: Some(TitlebarOptions {
                 title: Some("设置".into()),
@@ -805,21 +837,61 @@ impl AppView {
             cx.background_executor()
                 .timer(std::time::Duration::from_millis(1))
                 .await;
+
+            // 1) 已经开着就把它叫到前面（16ms 之后才碰 cx.windows()：
+            //    托盘命令是在 entity 的 update 闭包里进来的，同步调用会 panic）
+            let existing = this
+                .update(cx, |view, _| view.settings_window)
+                .ok()
+                .flatten();
+            if let Some(id) = existing {
+                let handle = cx.update(|app| {
+                    app.windows()
+                        .into_iter()
+                        .find(|handle| handle.window_id() == id)
+                });
+                if let Some(handle) = handle {
+                    let _ = handle.update(cx, |_, window, _| {
+                        crate::system::win::show_window(window);
+                        window.activate_window();
+                    });
+                    crate::ui_debug("open_settings: reused window shown");
+                    let _ = this.update(cx, |view, _| view.settings_opening = false);
+                    return;
+                }
+                // 窗口没了：清掉陈旧记录，往下重建
+                crate::ui_debug("open_settings: stale window id, recreating");
+                let _ = this.update(cx, |view, cx| {
+                    view.settings_window = None;
+                    cx.notify();
+                });
+            }
+
+            // 2) 新建
             let Some(entity) = this.upgrade() else {
                 return;
             };
             crate::ui_debug("open_settings: creating window");
             let opened = cx.update(|app| app.open_window(options, move |_, _| entity.clone()));
             match &opened {
-                Ok(_) => crate::ui_debug("open_settings: created ok"),
-                Err(error) => crate::ui_debug(&format!("open_settings: create failed: {error}")),
-            }
-            if let Ok(handle) = opened {
-                let id = handle.window_id();
-                let _ = this.update(cx, |view, cx| {
-                    view.settings_window = Some(id);
-                    cx.notify();
-                });
+                Ok(handle) => {
+                    let id = handle.window_id();
+                    crate::ui_debug("open_settings: created ok");
+                    let _ = this.update(cx, |view, cx| {
+                        view.settings_window = Some(id);
+                        view.settings_opening = false;
+                        cx.notify();
+                    });
+                }
+                Err(error) => {
+                    crate::ui_debug(&format!("open_settings: create failed: {error}"));
+                    // 建不出来也不能把记录留在半路，否则下次还是走复用岔路
+                    let _ = this.update(cx, |view, cx| {
+                        view.settings_window = None;
+                        view.settings_opening = false;
+                        cx.notify();
+                    });
+                }
             }
         })
         .detach();
@@ -840,35 +912,126 @@ impl AppView {
         crate::system::win::hide_window(window);
         // 隐藏后把前台交还主窗口：否则 gpui 可能仍把激活留在被隐藏的设置窗口上，
         // 主窗口看起来"点不动"（事件进不来）。
-        crate::system::win::show_main_window();
+        // 但主窗口若本来就在托盘里藏着，就别把它叫出来。
+        if !self.main_hidden {
+            crate::system::win::show_main_window();
+        }
         cx.notify();
+    }
+
+    /// 切换主题：只换配色，不改窗口显隐。
+    ///
+    /// 之前是从设置页里直接改 `dark` 再 `sync_kit_theme`，而 `Theme::change`
+    /// 会刷新所有窗口 —— 一旦某个窗口被顺带显示/顶到别的窗口后面，
+    /// 用户看到的就是「设置页没了、主窗口冒出来」。
+    pub fn switch_theme(&mut self, mode: ThemeMode, cx: &mut Context<Self>) {
+        self.state.theme = mode;
+        self.dark = mode.is_dark(system_is_dark());
+        self.sync_kit_theme(cx);
+        self.restore_window_visibility(cx);
+        cx.notify();
+    }
+
+    /// 主题刷新后把窗口显隐恢复原样（该藏的继续藏，设置窗口保持可见）。
+    fn restore_window_visibility(&mut self, cx: &mut App) {
+        if self.main_hidden {
+            crate::system::win::hide_main_window();
+        }
+        if let Some(id) = self.settings_window {
+            if let Some(handle) = cx.windows().into_iter().find(|h| h.window_id() == id) {
+                let _ = handle.update(cx, |_, window, _| {
+                    crate::system::win::show_window_without_focus(window);
+                });
+            }
+        }
     }
 
     /// Esc：按「从内到外」的顺序关一层。
     ///
     /// 下拉浮层 → 弹窗覆盖层 → 都没有就把窗口收到托盘（和点 ✕ 一致）。
     /// 参考 ElegantClipboard 的 dismiss_or_hide：先收临时层，最后才动窗口。
-    fn dismiss_or_hide(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+    fn dismiss_or_hide(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.dropdown_at.is_some() {
-            self.dropdown_at = None;
-            self.open_select = OpenSelect::None;
+            self.close_dropdown();
             cx.notify();
             return;
         }
         if self.overlay != Overlay::None {
+            // 编辑密钥时按 Esc = 放弃改动
+            if let Overlay::ChannelEdit(_) = self.overlay {
+                self.state.reload_draft();
+            }
             self.overlay = Overlay::None;
+            self.active = None;
             cx.notify();
             return;
         }
-        self.close_signal
-            .store(true, std::sync::atomic::Ordering::SeqCst);
-        cx.notify();
+        self.request_close(window, cx);
+    }
+
+    /// 关窗：按设置决定「收进托盘」还是「直接退出」，并且**当场**执行。
+    ///
+    /// 原来是把 `close_signal` 置位、等下一次 tick 才隐藏 —— tick 是 1 秒一次，
+    /// 于是点 ✕ 之后窗口最多要等一秒才消失，看起来就是「点了没反应」。
+    pub fn request_close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.state.settings.minimize_to_tray {
+            // 记住 HWND：窗口隐藏后枚举不到，托盘「打开主窗口」全靠这个句柄
+            crate::system::win::hide_main_window_of(window);
+            self.main_hidden = true;
+            self.state
+                .log(LogKind::Info, "窗口已隐藏到托盘，签到继续在后台运行");
+            cx.notify();
+        } else {
+            std::process::exit(0);
+        }
     }
 
     /// 立即签到（按钮与 Ctrl+Enter 共用）。
     pub fn run_now(&mut self) {
         self.runtime.request_run_now();
         self.state.log(LogKind::Info, "已请求立即签到");
+    }
+
+    /// 打开一个下拉浮层：按窗口大小算好位置（下面放不下就往上翻）。
+    ///
+    /// 位置必须在这一步夹住：浮层画在根层，超出窗口的部分连点都点不到。
+    pub fn open_dropdown(&mut self, kind: OpenSelect, at: Point<Pixels>, window: &Window) {
+        let (count, columns) = dropdown_layout(kind);
+        if count == 0 {
+            return;
+        }
+        let rows = count.div_ceil(columns.max(1));
+        let width = dropdown_width(columns);
+        let height = rows as f32 * DD_ROW_H + DD_PAD * 2.0 + 2.0;
+        let viewport = window.viewport_size();
+        let margin = px(6.0);
+
+        let mut x = at.x;
+        if x + px(width) > viewport.width - margin {
+            x = viewport.width - px(width) - margin;
+        }
+        if x < margin {
+            x = margin;
+        }
+        let mut y = at.y + px(4.0);
+        if y + px(height) > viewport.height - margin {
+            // 下面放不下就翻到点击点上方
+            y = at.y - px(height) - px(4.0);
+        }
+        if y < margin {
+            y = margin;
+        }
+
+        self.open_select = kind;
+        self.dropdown_at = Some((kind, x, y));
+        self.dropdown_rect = Some((f32::from(x), f32::from(y), width, height));
+    }
+
+    /// 收起下拉浮层。
+    pub fn close_dropdown(&mut self) {
+        self.dropdown_at = None;
+        self.dropdown_rect = None;
+        self.open_select = OpenSelect::None;
     }
 
     /// 把当前日志复制到剪贴板（Win32 Unicode，中文不会乱码）。
@@ -894,6 +1057,7 @@ impl AppView {
     /// 清空界面日志，同时把今天的日志文件清掉（否则重启又回来了）。
     pub fn clear_logs(&mut self) {
         self.state.logs.clear();
+        self.state.log_revision = self.state.log_revision.wrapping_add(1);
         let path = self.state.log_file();
         let _ = std::fs::OpenOptions::new()
             .write(true)
@@ -914,40 +1078,67 @@ impl AppView {
         let _ = self.state.config.save(self.state.paths.config_file());
     }
 
-    /// 关闭态点「编辑」：打开渠道并聚焦输入框。
-    fn open_channel(&mut self, field: Field, window: &mut Window, cx: &mut Context<Self>) {
-        self.set_channel(field, true);
+    /// 当前渠道的密钥（未打码）。
+    pub fn channel_key(&self, field: Field) -> String {
+        match field {
+            Field::Qq => self.state.draft.qq_key.clone(),
+            _ => self.state.draft.wx_key.clone(),
+        }
+    }
+
+    /// 「编辑」：弹窗里改该渠道的密钥（草稿先按磁盘内容重灌一次）。
+    fn open_channel_editor(&mut self, field: Field, window: &mut Window, cx: &mut Context<Self>) {
+        self.state.reload_draft();
+        self.overlay = Overlay::ChannelEdit(field);
+        self.active = Some(field);
         window.focus(&self.focus[field.index()], cx);
         cx.notify();
     }
 
-    /// 点通知开关：只切换「渠道是否启用」，输入框跟着显示/隐藏，Key 一律保留。
-    fn toggle_notify(&mut self, field: Field, window: &mut Window, cx: &mut Context<Self>) {
+    /// 「查看」：弹窗里打码看一眼当前密钥。
+    fn open_channel_viewer(&mut self, field: Field, cx: &mut Context<Self>) {
+        self.overlay = Overlay::ChannelView(field);
+        self.active = None;
+        cx.notify();
+    }
+
+    /// 保存弹窗里改过的密钥：只动这一个字段，不碰坐标与重试设置。
+    pub fn save_channel_key(&mut self, field: Field, cx: &mut Context<Self>) {
         let index = self.state.selected;
-        let Some(student) = self.state.config.students.get(index) else {
-            return;
-        };
-        let is_wx = field == Field::Wx;
-        let next = if is_wx {
-            !student.wx_enabled()
-        } else {
-            !student.qq_enabled()
-        };
-
-        self.set_channel(field, next);
-
-        let name = if is_wx { "微信通知" } else { "QQ 通知" };
-        if next {
-            window.focus(&self.focus[field.index()], cx);
-            self.state
-                .log(LogKind::Info, format!("已开启{name}，填入 Key 后即可推送"));
-        } else {
-            self.state.log(
-                LogKind::Info,
-                format!("已关闭{name}，Key 仍保留在 data.json 里"),
-            );
+        let key = self.channel_key(field).trim().to_string();
+        if let Some(student) = self.state.config.students.get_mut(index) {
+            match field {
+                Field::Qq => student.qmsg_key = key.clone(),
+                _ => student.wx_key = key.clone(),
+            }
         }
-        // 少了这一句，状态改了但界面不刷新，表现出来就是「开关点不动、输入框不消失」
+        let name = channel_name(field);
+        match self.state.config.save(self.state.paths.config_file()) {
+            Ok(()) => {
+                self.state.log(
+                    LogKind::Ok,
+                    if key.is_empty() {
+                        format!("已清空{name}密钥，该渠道不会推送")
+                    } else {
+                        format!("已保存{name}密钥（{}）", mask_key(&key))
+                    },
+                );
+                self.state.reload_draft();
+            }
+            Err(error) => self
+                .state
+                .log(LogKind::Bad, format!("保存{name}密钥失败：{error}")),
+        }
+        self.overlay = Overlay::None;
+        self.active = None;
+        cx.notify();
+    }
+
+    /// 放弃编辑：把草稿按磁盘内容重灌。
+    pub fn cancel_channel_edit(&mut self, cx: &mut Context<Self>) {
+        self.state.reload_draft();
+        self.overlay = Overlay::None;
+        self.active = None;
         cx.notify();
     }
 
@@ -1103,9 +1294,16 @@ impl AppView {
                     .pl(px(12.0))
                     .pr(px(8.0))
                     .gap(px(8.0))
+                    // 拖动：按下时记住光标相对窗口的偏移，之后跟着光标挪窗口。
+                    // 系统那两套（start_window_move / window_control_area）在
+                    // Windows + 客户端装饰下都不可靠，原因见 win.rs 的注释。
+                    .cursor_pointer()
                     .on_mouse_down(
                         MouseButton::Left,
-                        cx.listener(|_, _, window, _| window.start_window_move()),
+                        cx.listener(|this, _, window, cx| {
+                            this.window_drag = crate::system::win::begin_window_drag(window);
+                            cx.notify();
+                        }),
                     )
                     .child(img("logo-64.png").w(px(20.0)).h(px(20.0)))
                     .child(
@@ -1116,6 +1314,7 @@ impl AppView {
                     )
                     .child(pill(text, fg, bg, border, true)),
             )
+            // 按钮区不落在拖拽区里，否则点不到（系统会把按下当成拖动）
             .child(window_button(WindowButton::Min, p, cx))
             .child(window_button(WindowButton::Close, p, cx))
             .into_any_element()
@@ -1600,23 +1799,13 @@ impl AppView {
 
         let lat = self.text_field(Field::Lat, true, readonly, p, cx);
         let lng = self.text_field(Field::Lng, true, readonly, p, cx);
-        // 渠道关掉时输入框整个不渲染，只留一行说明；Key 仍留在 data.json 里
+        // 通知渠道：开关只决定「发不发」，输入框不再直接铺在这里。
+        // 关掉时整块收起来，打开时在右侧给「编辑 / 查看」两个入口，各自弹窗操作。
         let (wx_on, qq_on) = self
             .state
             .selected_student()
             .map(|student| (student.wx_enabled(), student.qq_enabled()))
             .unwrap_or((false, false));
-        let wx = if wx_on {
-            // 通知 Key 与签到凭证无关，账号需要重登时也应该能编辑
-            self.text_field(Field::Wx, true, false, p, cx)
-        } else {
-            closed_channel_hint(Field::Wx, p, cx)
-        };
-        let qq = if qq_on {
-            self.text_field(Field::Qq, true, false, p, cx)
-        } else {
-            closed_channel_hint(Field::Qq, p, cx)
-        };
 
         let pin = svg()
             .path(IconName::Map.path())
@@ -1667,27 +1856,19 @@ impl AppView {
                             .w_full()
                             .items_end()
                             .gap(px(8.0))
-                            .child(field_block_with_switch(
-                                notify_header(
-                                    "微信通知 · Server 酱",
-                                    wx_on,
-                                    Field::Wx,
-                                    false,
-                                    p,
-                                    cx,
-                                ),
-                                wx,
+                            .child(notify_block(
+                                "微信通知 · Server 酱",
+                                Field::Wx,
+                                wx_on,
+                                p,
+                                cx,
                             ))
-                            .child(field_block_with_switch(
-                                notify_header(
-                                    "QQ 通知 · Qmsg 酱",
-                                    qq_on,
-                                    Field::Qq,
-                                    false,
-                                    p,
-                                    cx,
-                                ),
-                                qq,
+                            .child(notify_block(
+                                "QQ 通知 · Qmsg 酱",
+                                Field::Qq,
+                                qq_on,
+                                p,
+                                cx,
                             )),
                     ),
             )
@@ -1751,15 +1932,9 @@ impl AppView {
             62.0,
             "retry-attempts",
             readonly,
+            OpenSelect::RetryAttempts,
             p,
             cx,
-            move |this| {
-                this.open_select = if this.open_select == OpenSelect::RetryAttempts {
-                    OpenSelect::None
-                } else {
-                    OpenSelect::RetryAttempts
-                };
-            },
         );
         let delay = select_trigger(
             format!("{delay_value}"),
@@ -1767,15 +1942,9 @@ impl AppView {
             62.0,
             "retry-delay",
             readonly,
+            OpenSelect::RetryDelay,
             p,
             cx,
-            move |this| {
-                this.open_select = if this.open_select == OpenSelect::RetryDelay {
-                    OpenSelect::None
-                } else {
-                    OpenSelect::RetryDelay
-                };
-            },
         );
 
         let mut panel = div()
@@ -2217,7 +2386,7 @@ impl AppView {
     }
 
     /// 一个文本输入框：外框 + 文本 + 聚焦时的光标。
-    fn text_field(
+    pub(crate) fn text_field(
         &self,
         field: Field,
         mono: bool,
@@ -2288,6 +2457,9 @@ impl AppView {
                 cx.listener(move |this, _, window, cx| {
                     this.active = Some(field);
                     window.focus(&this.focus[index], cx);
+                    // 别让事件冒到根节点：根节点的 mouse_down 负责「点到别处就收光标」，
+                    // 不拦住的话刚点进来就被收掉了（表现是输入框永远聚焦不上）。
+                    cx.stop_propagation();
                     cx.notify();
                 }),
             )
@@ -2343,12 +2515,9 @@ fn window_button(kind: WindowButton, p: &Palette, cx: &mut Context<AppView>) -> 
         })
         .on_click(cx.listener(move |this, _, window, cx| match kind {
             WindowButton::Min => window.minimize_window(),
-            WindowButton::Close => {
-                // 关闭 = 交给原来的「最小化到托盘」流程，别直接销毁窗口
-                this.close_signal
-                    .store(true, std::sync::atomic::Ordering::SeqCst);
-                cx.notify();
-            }
+            // 关闭 = 交给「最小化到托盘 / 直接退出」那条路，但**立刻**执行：
+            // 原来是置一个标志、等下一次 tick（最长 1 秒）才隐藏，手感就是「点了没反应」。
+            WindowButton::Close => this.request_close(window, cx),
         }))
         .child(glyph)
         .into_any_element()
@@ -2372,127 +2541,132 @@ fn field_block(title: impl Into<SharedString>, input: AnyElement, p: &Palette) -
         .into_any_element()
 }
 
-/// 标签前带开关的输入框列。
-/// 渠道关闭时代替输入框的一行说明，高度与输入框一致，避免两列错位。
-/// 渠道关闭时不再画一个「假输入框」，只留一行状态 + 一个编辑按钮。
-/// 点编辑 = 打开该渠道并聚焦输入框。
-fn closed_channel_hint(
-    field: Field,
-    p: &Palette,
-    cx: &mut Context<AppView>,
-) -> AnyElement {
-    let label = if field == Field::Wx { "微信" } else { "QQ" };
-    div()
-        .h(px(30.0))
-        .w_full()
-        .flex()
-        .items_center()
-        .gap(px(8.0))
-        .px(px(10.0))
-        .rounded(px(7.0))
-        .border_1()
-        .border_color(rgb(p.line))
-        .bg(rgb(p.surface_2))
-        .child(
-            div()
-                .flex_1()
-                .text_size(px(11.5))
-                .text_color(rgb(p.text_3))
-                .child(format!("{label}通知已关闭，不发送")),
-        )
-        .child(
-            div()
-                .id(SharedString::from(match field {
-                    Field::Wx => "edit-wx",
-                    _ => "edit-qq",
-                }))
-                .px(px(8.0))
-                .py(px(2.0))
-                .rounded(px(5.0))
-                .text_size(px(11.0))
-                .text_color(rgb(p.accent))
-                .cursor_pointer()
-                .hover(|style| style.bg(rgb(p.surface_3)))
-                .on_click(cx.listener(move |this, _, window, cx| {
-                    this.open_channel(field, window, cx);
-                }))
-                .child("编辑"),
-        )
-        .into_any_element()
+/// 通知渠道名（日志与弹窗标题共用）。
+pub fn channel_name(field: Field) -> &'static str {
+    match field {
+        Field::Qq => "QQ 通知",
+        _ => "微信通知",
+    }
 }
 
-/// 通知渠道的标题行：开关 + 名称，整行可点。
+/// 渠道的说明文案（Server 酱 / Qmsg 酱）。
+pub fn channel_hint(field: Field) -> &'static str {
+    match field {
+        Field::Qq => "在 Qmsg 酱后台复制 Key，形如 xxxx",
+        _ => "在 Server 酱后台复制 SendKey，形如 SCTxxxx",
+    }
+}
+
+/// 渠道密钥在 data.json 里的字段名。
+pub fn channel_field_label(field: Field) -> &'static str {
+    match field {
+        Field::Qq => "QmsgKEY",
+        _ => "WXKey",
+    }
+}
+
+/// 通知渠道一行：开关 + 名称 + 右侧「编辑 / 查看」。
 ///
-/// 开关状态就是「Key 是否非空」，所以点它等于：已配置 → 清空 Key（关掉渠道）；
-/// 未配置 → 聚焦输入框，让用户去填。
-fn notify_header(
+/// 关掉时不再显示输入框（也不显示假输入框），只留一句「已关闭」；
+/// 打开时keys 的读写都走弹窗：编辑 = 改 Key，查看 = 打码看一眼。
+/// 这样主界面上不会有半个屏幕的密钥输入框，也不容易误改。
+fn notify_block(
     title: &'static str,
-    checked: bool,
     field: Field,
-    readonly: bool,
+    enabled: bool,
     p: &Palette,
     cx: &mut Context<AppView>,
 ) -> AnyElement {
-    // 开关用 gpui-kit 的 Switch：键盘可达、带过渡动画，颜色接我们的强调色
     let app = cx.entity();
+    // 只让 Switch 自己处理点击。整行再挂一个 on_click 的话，
+    // 一次点击会走两遍切换（Switch 一次 + 行一次），净效果等于没点。
     let toggle = Switch::new(SharedString::from(format!("notify-switch-{title}")))
-        .checked(checked)
+        .checked(enabled)
         .color(Hsla::from(rgb(p.accent)))
         .on_change(move |next: &bool, _window, cx: &mut App| {
             let next = *next;
             app.update(cx, |this, cx| {
                 this.set_channel(field, next);
-                let name = if field == Field::Wx {
-                    "微信通知"
-                } else {
-                    "QQ 通知"
-                };
+                let name = channel_name(field);
                 this.state.log(
                     LogKind::Info,
                     if next {
-                        format!("已开启{name}，填入 Key 后即可推送")
+                        format!("已开启{name}，点「编辑」填入密钥后即可推送")
                     } else {
-                        format!("已关闭{name}，Key 仍保留在 data.json 里")
+                        format!("已关闭{name}，密钥仍保留在 data.json 里")
                     },
                 );
+                // 关掉渠道时，正在编辑该渠道的弹窗一并收起（草稿丢弃）
+                if !next {
+                    if let Overlay::ChannelEdit(open) = this.overlay {
+                        if open == field {
+                            this.state.reload_draft();
+                            this.overlay = Overlay::None;
+                            this.active = None;
+                        }
+                    }
+                }
                 cx.notify();
             });
         });
 
-    let mut header = div()
-        .id(SharedString::from(format!("notify-header-{title}")))
-        .flex()
-        .items_center()
-        .gap(px(6.0))
-        .child(toggle)
-        .child(
+    let mut actions = div().flex().items_center().gap(px(4.0));
+    if enabled {
+        actions = actions
+            .child(
+                button("编辑", BtnKind::Default, BtnSize::Xs, false, p)
+                    .id(SharedString::from(format!(
+                        "channel-edit-{}",
+                        channel_field_label(field)
+                    )))
+                    .cursor_pointer()
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.open_channel_editor(field, window, cx);
+                    })),
+            )
+            .child(
+                button("查看", BtnKind::Default, BtnSize::Xs, false, p)
+                    .id(SharedString::from(format!(
+                        "channel-view-{}",
+                        channel_field_label(field)
+                    )))
+                    .cursor_pointer()
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.open_channel_viewer(field, cx);
+                    })),
+            );
+    } else {
+        actions = actions.child(
             div()
-                .text_size(px(12.0))
-                .text_color(rgb(p.text_2))
-                .child(title),
+                .text_size(px(11.0))
+                .text_color(rgb(p.text_3))
+                .child("已关闭，不发送"),
         );
-
-    if !readonly {
-        header = header
-            .cursor_pointer()
-            .hover(|style| style.opacity(0.8))
-            .on_click(cx.listener(move |this, _, window, cx| {
-                this.toggle_notify(field, window, cx);
-            }));
     }
-    header.into_any_element()
-}
 
-/// 带开关标题的输入块。标题行由调用方构造（开关要能点）。
-fn field_block_with_switch(header: AnyElement, input: AnyElement) -> AnyElement {
     div()
         .flex()
         .flex_col()
-        .gap(px(5.0))
         .flex_1()
         .min_w_0()
-        .child(header)
-        .child(input)
+        .child(
+            div()
+                .h(px(30.0))
+                .w_full()
+                .flex()
+                .items_center()
+                .gap(px(6.0))
+                .child(toggle)
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .text_size(px(12.0))
+                        .text_color(rgb(p.text_2))
+                        .child(title),
+                )
+                .child(actions),
+        )
         .into_any_element()
 }
 
@@ -2503,14 +2677,14 @@ fn dropdown_overlay(
     p: &Palette,
     cx: &mut Context<AppView>,
 ) -> AnyElement {
-    let (items, width): (Vec<(String, bool)>, f32) = match kind {
+    let (items, columns): (Vec<(String, bool)>, usize) = match kind {
         OpenSelect::RetryAttempts => {
             let current = view.state.settings.retry_attempts;
             (
                 (1..=10u32)
                     .map(|n| (format!("{n} 次"), n == current))
                     .collect(),
-                132.0,
+                dropdown_layout(kind).1,
             )
         }
         OpenSelect::RetryDelay => {
@@ -2520,7 +2694,7 @@ fn dropdown_overlay(
                     .iter()
                     .map(|n| (format!("{n} 分钟"), *n == current))
                     .collect(),
-                132.0,
+                dropdown_layout(kind).1,
             )
         }
         OpenSelect::Hour => {
@@ -2529,7 +2703,7 @@ fn dropdown_overlay(
                 (0..24u32)
                     .map(|h| (format!("{h:02} 时"), h == current))
                     .collect(),
-                132.0,
+                dropdown_layout(kind).1,
             )
         }
         OpenSelect::Minute => {
@@ -2541,13 +2715,13 @@ fn dropdown_overlay(
                         (format!("{m:02} 分"), m == current)
                     })
                     .collect(),
-                132.0,
+                dropdown_layout(kind).1,
             )
         }
         OpenSelect::None => return div().into_any_element(),
     };
 
-    dropdown_list(items, width, 2, "overlay-list", p, cx, move |this, index| {
+    dropdown_list(items, columns, "overlay-list", p, cx, move |this, index| {
         match kind {
             OpenSelect::RetryAttempts => {
                 let _ = this.state.set_retry_attempts(index as u32 + 1);
@@ -2559,34 +2733,45 @@ fn dropdown_overlay(
             OpenSelect::Minute => this.picker_minute = index as u32 * 5,
             OpenSelect::None => {}
         }
-        this.open_select = OpenSelect::None;
-        this.dropdown_at = None;
+        this.close_dropdown();
     })
 }
 
-/// 下拉列表：竖直选项，项多时分成几列一次显示，不靠滚动。
+/// 下拉列表：竖直选项，项多时按列铺开，保证整块都在窗口里。
 ///
-/// 之前试过「限高 + 滚动 + 打开时滚到当前值」，gpui 的 ScrollHandle 要等布局完成
-/// 才认目标项，时机不稳；直接按列铺开更可靠 —— 打开就能看到当前值。
+/// 这里有两个坑，别再踩：
+/// 1. 列表必须 `occlude_mouse()`。浮层底下铺了一张全屏遮罩（点别处收起），
+///    遮罩和列表是兄弟节点，命中判定会把两者都收进事件链 —— 遮罩的
+///    `on_mouse_down` 会抢在选项的 click 之前把列表关掉，于是「点选项没反应、
+///    列表自己收起」。让列表吃掉鼠标，事件链就到此为止。
+/// 2. 列表不能无限长。24 小时的列表一列铺下去有 600 多像素，超出窗口的部分
+///    连点都点不到，所以按列铺开 + 打开时按窗口大小翻转。
 pub fn dropdown_list(
     items: Vec<(String, bool)>,
-    width: f32,
-    _columns: usize,
+    columns: usize,
     prefix: &'static str,
     p: &Palette,
     cx: &mut Context<AppView>,
     on_pick: impl Fn(&mut AppView, usize) + 'static,
 ) -> AnyElement {
     let on_pick = std::rc::Rc::new(on_pick);
+    let columns = columns.max(1);
+    let rows = items.len().div_ceil(columns);
 
-    // 单列：超出高度就滚动（用户明确要「一列下拉」，不要多列）
-    {
-        let mut column = div().flex().flex_col().flex_none().w_full();
-        for (index, (label, selected)) in items.iter().enumerate() {
+    let mut grid = div().flex().flex_row().gap(px(2.0)).items_start();
+    for column_index in 0..columns {
+        let mut column = div().flex().flex_col().w(px(DD_COL_W)).flex_none();
+        for row_index in 0..rows {
+            let index = column_index * rows + row_index;
+            let Some((label, selected)) = items.get(index) else {
+                // 最后一列可能不满，用空白占位保持对齐
+                column = column.child(div().h(px(DD_ROW_H)).w_full().flex_none());
+                continue;
+            };
             let callback = on_pick.clone();
             let base = div()
                 .id(SharedString::from(format!("{prefix}-item-{index}")))
-                .h(px(26.0))
+                .h(px(DD_ROW_H))
                 .w_full()
                 .flex_none()
                 .flex()
@@ -2611,33 +2796,36 @@ pub fn dropdown_list(
                     .into_any_element()
             });
         }
-
-        div()
-            .id(SharedString::from(format!("{prefix}-list")))
-            .w(px(width))
-            .flex_none()
-            .rounded(px(8.0))
-            .border_1()
-            .border_color(rgb(p.line_2))
-            .bg(rgb(p.surface))
-            // 选中态是实底，不裁剪的话会盖住圆角
-            .overflow_hidden()
-            .p(px(4.0))
-            .child(column.max_h(px(232.0)).overflow_y_scrollbar())
-            .into_any_element()
+        grid = grid.child(column);
     }
+
+    div()
+        .id(SharedString::from(format!("{prefix}-list")))
+        .w(px(dropdown_width(columns)))
+        .flex_none()
+        .rounded(px(8.0))
+        .border_1()
+        .border_color(rgb(p.line_2))
+        .bg(rgb(p.surface))
+        // 选中态是实底，不裁剪的话会盖住圆角
+        .overflow_hidden()
+        // 吃掉鼠标：别让底下的遮罩把这次点击当成「点外面」
+        .occlude()
+        .p(px(DD_PAD))
+        .child(grid)
+        .into_any_element()
 }
 
-/// 下拉触发器：外观像输入框，右侧一个 ▼，点开后在下方展开一列选项。
+/// 下拉触发器：外观像输入框，右侧一个 ▼，点开后在下方展开列表。
 fn select_trigger(
     value: String,
     open: bool,
     width: f32,
     id: &'static str,
     readonly: bool,
+    target: OpenSelect,
     p: &Palette,
     cx: &mut Context<AppView>,
-    on_toggle: impl Fn(&mut AppView) + 'static,
 ) -> AnyElement {
     let mut trigger = div()
         .id(SharedString::from(format!("select-{id}")))
@@ -2666,14 +2854,12 @@ fn select_trigger(
         trigger = trigger
             .cursor_pointer()
             .hover(|style| style.border_color(rgb(p.text_3)))
-            .on_click(cx.listener(move |this, event: &ClickEvent, _, cx| {
-                on_toggle(this);
-                let pos = event.position();
-                this.dropdown_at = if this.open_select == OpenSelect::None {
-                    None
+            .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
+                if this.open_select == target {
+                    this.close_dropdown();
                 } else {
-                    Some((this.open_select, pos.x, pos.y))
-                };
+                    this.open_dropdown(target, event.position(), window);
+                }
                 cx.notify();
             }));
     }
@@ -2714,7 +2900,16 @@ pub(crate) fn open_url(target: &str) -> std::io::Result<()> {
 /// 之前走 `powershell -Command "$input | Set-Clipboard"`，中文会乱码：
 /// PowerShell 从 stdin 读文本时按控制台的 OEM/ANSI 代码页解码，而我们写进去的是 UTF-8。
 /// 直接用 Unicode 剪贴板格式既没有编码问题，也不用起子进程。
-fn set_clipboard_text(text: &str) -> std::io::Result<()> {
+pub(crate) fn set_clipboard_text(text: &str) -> std::io::Result<()> {
+    copy_to_clipboard(text)
+}
+
+/// 对外的一层：弹窗里的「复制」也走这里，保证编码一致。
+pub fn copy_to_clipboard(text: &str) -> std::io::Result<()> {
+    set_clipboard_impl(text)
+}
+
+fn set_clipboard_impl(text: &str) -> std::io::Result<()> {
     use windows_sys::Win32::System::DataExchange::{
         CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData,
     };
@@ -2758,9 +2953,21 @@ impl Render for AppView {
 
         let window_id = window.window_handle().window_id();
 
-        // 同一个 entity 在两个窗口里渲染：靠窗口句柄区分画主界面还是设置页
-        if self.settings_window == Some(window_id) {
+        // 同一个 entity 在两个窗口里渲染：只有主窗口画主界面，其余一律是设置页。
+        // 之前是「window_id 等于 settings_window 才画设置」，一旦 settings_window
+        // 记录丢了，设置窗口就会把主界面画出来 —— 用户看到的是「设置页没了、
+        // 主窗口冒出来」。改成以主窗口为基准，两边都不会认错。
+        if self.main_window_id != Some(window_id) {
             return crate::ui::settings::render(self, p, cx);
+        }
+
+        // 日志贴底：只在**渲染这一帧**把请求交给 ScrollHandle，
+        // 它才会在紧接着的 prepaint 里用「含新行」的内容高度算偏移。
+        // 在 tick / 点击回调里提前调的话，会被「还没包含新行」的那一帧先消费掉，
+        // 结果永远差一行到不了底。版本号比长度可靠：600 行封顶后长度不再变化。
+        if self.log_revision_seen != Some(self.state.log_revision) {
+            self.log_revision_seen = Some(self.state.log_revision);
+            self.log_scroll.scroll_to_bottom();
         }
 
         let mut root = div()
@@ -2781,6 +2988,20 @@ impl Render for AppView {
                     this.dismiss_or_hide(window, cx);
                 }
             }))
+            // 拖动标题栏后，光标一动就把窗口跟过去；松开结束
+            .on_mouse_move(cx.listener(|this, _: &MouseMoveEvent, _, _| {
+                if let Some(offset) = this.window_drag {
+                    crate::system::win::drag_window_to(offset);
+                }
+            }))
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(|this, _, _, cx| {
+                    if this.window_drag.take().is_some() {
+                        cx.notify();
+                    }
+                }),
+            )
             .child(self.render_titlebar(p, cx))
             .child(
                 div()
@@ -2797,11 +3018,17 @@ impl Render for AppView {
             Overlay::Settings(_) | Overlay::CloseHint => {}
             Overlay::Qr => root = root.child(crate::ui::qr_modal::render(self, p, cx)),
             Overlay::TimePicker => root = root.child(crate::ui::time_picker::render(self, p, cx)),
+            Overlay::ChannelEdit(_) | Overlay::ChannelView(_) => {
+                root = root.child(crate::ui::channel_modal::render(self, p, cx));
+            }
             Overlay::None => {}
         }
 
-        // 下拉浮层画在最上层：底下垫一个透明遮罩，点别处收起
+        // 下拉浮层画在最上层：底下垫一个透明遮罩，点别处收起。
+        // 注意遮罩只负责「点外面」，落在列表矩形里的点击直接放过 ——
+        // 否则遮罩的 mouse_down 会先把列表拆掉，选项的 click 根本来不及成立。
         if let Some((kind, x, y)) = self.dropdown_at {
+            let rect = self.dropdown_rect;
             root = root
                 .child(
                     div()
@@ -2809,9 +3036,18 @@ impl Render for AppView {
                         .inset_0()
                         .on_mouse_down(
                             MouseButton::Left,
-                            cx.listener(|this, _, _, cx| {
-                                this.dropdown_at = None;
-                                this.open_select = OpenSelect::None;
+                            cx.listener(move |this, event: &gpui_kit::MouseDownEvent, _, cx| {
+                                if let Some((rx, ry, rw, rh)) = rect {
+                                    let point = event.position;
+                                    let inside = f32::from(point.x) >= rx
+                                        && f32::from(point.x) <= rx + rw
+                                        && f32::from(point.y) >= ry
+                                        && f32::from(point.y) <= ry + rh;
+                                    if inside {
+                                        return;
+                                    }
+                                }
+                                this.close_dropdown();
                                 cx.notify();
                             }),
                         ),
@@ -2820,16 +3056,19 @@ impl Render for AppView {
                     div()
                         .absolute()
                         .left(x)
-                        .top(y + px(4.0))
+                        .top(y)
                         .child(dropdown_overlay(kind, self, p, cx)),
                 );
         }
         root = root.on_mouse_down(
             MouseButton::Left,
-            cx.listener(|this, _, _, _| {
+            cx.listener(|this, event: &gpui_kit::MouseDownEvent, _, cx| {
                 this.click_probe = this.click_probe.saturating_add(1);
-                if this.click_probe <= 40 {
-                    crate::ui_debug(&format!("main window click #{}", this.click_probe));
+                let _ = event;
+                // 点到别处就收起输入框光标（输入框自己会 stop_propagation，不会走到这里）
+                if this.active.is_some() {
+                    this.active = None;
+                    cx.notify();
                 }
             }),
         );

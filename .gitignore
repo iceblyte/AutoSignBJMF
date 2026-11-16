@@ -71,3 +71,6 @@ selfcheck.txt
 /rust/_tools/*
 ## 但里面几个排查/生成脚本是有用的，入库
 !/rust/_tools/*.py
+
+## QA 临时数据（自动化脚本用的演示配置，不入库）
+/rust/_qa/

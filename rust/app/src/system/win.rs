@@ -7,13 +7,78 @@ use std::ffi::c_void;
 
 use windows_sys::Win32::Foundation::RECT;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    EnumWindows, FindWindowW, GetWindow, GetWindowRect, GetWindowThreadProcessId, IsIconic, IsWindow, IsWindowVisible, IsZoomed, MessageBoxW, SetForegroundWindow, ShowWindow, ShowWindowAsync, GW_OWNER,
-    MB_ICONINFORMATION, MB_OK, SW_HIDE, SW_RESTORE, SW_SHOW, SW_SHOWMAXIMIZED,
+    EnumWindows, FindWindowW, GetCursorPos, GetWindow, GetWindowRect, GetWindowThreadProcessId,
+    IsIconic, IsWindow, IsWindowVisible, IsZoomed, MessageBoxW, SetForegroundWindow, ShowWindow,
+    ShowWindowAsync, GW_OWNER, MB_ICONINFORMATION, MB_OK, SW_HIDE, SW_RESTORE, SW_SHOW,
+    SW_SHOWMAXIMIZED,
 };
+use windows_sys::Win32::Foundation::POINT;
 
 /// 转成 Windows 需要的以 0 结尾的 UTF-16。
 fn wide(text: &str) -> Vec<u16> {
     text.encode_utf16().chain(std::iter::once(0)).collect()
+}
+
+/// 把窗口抢到前台。
+///
+/// `SetForegroundWindow` 有个系统限制：调用方进程不是当前前台进程时，
+/// 系统会**静默失败**（返回 0，窗口只闪一下任务栏）。
+/// 「从托盘/主窗口点设置，设置窗口却留在后面」就是这么来的：
+/// 窗口确实显示了，只是被主窗口盖着，看起来像没打开。
+///
+/// 常见做法是先 `AttachThreadInput` 到前台线程再设置，成功后再解绑；
+/// 这里再加上 `BringWindowToTop` 与一次 topmost 往返兜底。
+fn force_foreground(hwnd: *mut c_void) {
+    use windows_sys::Win32::System::Threading::AttachThreadInput;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        BringWindowToTop, GetForegroundWindow, GetWindowThreadProcessId, SetWindowPos, HWND_NOTOPMOST,
+        HWND_TOPMOST, SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW,
+    };
+    unsafe {
+        let foreground = GetForegroundWindow();
+        let mut foreground_pid = 0u32;
+        let foreground_thread = if foreground.is_null() {
+            0
+        } else {
+            GetWindowThreadProcessId(foreground, &mut foreground_pid)
+        };
+        let target_thread = GetWindowThreadProcessId(hwnd, std::ptr::null_mut());
+
+        let attached = foreground_thread != 0
+            && foreground_thread != target_thread
+            && AttachThreadInput(foreground_thread, target_thread, 1) != 0;
+
+        SetForegroundWindow(hwnd);
+        BringWindowToTop(hwnd);
+
+        if attached {
+            AttachThreadInput(foreground_thread, target_thread, 0);
+        }
+
+        // 仍然不是前台就做一次 topmost 往返：这一步能绕开前台锁，
+        // 顺序保证窗口最终回到普通层级，不会一直压在别人上面。
+        if GetForegroundWindow() != hwnd {
+            SetWindowPos(
+                hwnd,
+                HWND_TOPMOST,
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW,
+            );
+            SetWindowPos(
+                hwnd,
+                HWND_NOTOPMOST,
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW,
+            );
+            SetForegroundWindow(hwnd);
+        }
+    }
 }
 
 /// 按标题找到另一个进程的窗口并提到前台。
@@ -31,7 +96,7 @@ pub fn activate_window_by_title(title: &str) -> bool {
         let maximized = IsZoomed(hwnd) != 0;
         ShowWindowAsync(hwnd, if maximized { SW_SHOWMAXIMIZED } else { SW_SHOW });
         ShowWindow(hwnd, SW_RESTORE);
-        SetForegroundWindow(hwnd);
+        force_foreground(hwnd);
         true
     }
 }
@@ -212,7 +277,7 @@ pub fn show_window(window: &gpui_kit::Window) -> bool {
             SW_SHOW
         };
         ShowWindow(hwnd, command);
-        SetForegroundWindow(hwnd);
+        force_foreground(hwnd);
         true
     }
 }
@@ -324,8 +389,20 @@ pub fn show_main_window() -> bool {
             let maximized = IsZoomed(hwnd) != 0;
             ShowWindowAsync(hwnd, if maximized { SW_SHOWMAXIMIZED } else { SW_SHOW });
             ShowWindow(hwnd, SW_RESTORE);
-            SetForegroundWindow(hwnd);
+            force_foreground(hwnd);
             true
+        },
+        None => false,
+    }
+}
+
+/// 只显示、不抢焦点。用于「主题切换后把窗口显隐恢复原样」这类场景：
+/// 该在的就露出来，但不该把正在操作的那个窗口顶掉。
+pub fn show_window_without_focus(window: &gpui_kit::Window) -> bool {
+    match window_hwnd_of(window) {
+        Some(hwnd) => unsafe {
+            let command = if IsIconic(hwnd) != 0 { SW_RESTORE } else { SW_SHOW };
+            ShowWindow(hwnd, command) != 0
         },
         None => false,
     }
@@ -344,6 +421,64 @@ pub fn main_window_bounds() -> Option<WindowBounds> {
         right: rect.right,
         bottom: rect.bottom,
     })
+}
+
+/// 开始拖动窗口：返回「光标相对窗口左上角」的偏移。
+///
+/// 为什么不交给系统（`window_control_area(Drag)` / `start_window_move`）：
+/// - `start_window_move` 在 Windows 后端是空实现（只有 Wayland/X11 有）；
+/// - `window_control_area` 靠 WM_NCHITTEST，而 gpui 的命中判定用的是
+///   「上一帧算好的 mouse_hit_test」，鼠标刚移到标题栏、还没画新帧时
+///   系统问「这是不是标题栏」，答案永远是 HTCLIENT —— 于是按下去拖不动。
+///   （实测：把光标停在标题栏两秒再 SendMessage(WM_NCHITTEST) 仍返回 1。）
+/// 所以自己跟着光标挪窗口，逻辑简单且不受帧时序影响。
+pub fn begin_window_drag(window: &gpui_kit::Window) -> Option<(f32, f32)> {
+    let hwnd = window_hwnd_of(window)?;
+    unsafe {
+        let mut point: POINT = std::mem::zeroed();
+        if GetCursorPos(&mut point) == 0 {
+            return None;
+        }
+        // 最大化时不让自绘标题栏拖动（拖动语义是「还原」，系统那套更顺手）
+        if IsZoomed(hwnd) != 0 {
+            return None;
+        }
+        let mut rect: RECT = std::mem::zeroed();
+        if GetWindowRect(hwnd, &mut rect) == 0 {
+            return None;
+        }
+        Some((
+            (point.x - rect.left) as f32,
+            (point.y - rect.top) as f32,
+        ))
+    }
+}
+
+/// 把主窗口挪到「光标 - 偏移」的位置（拖动中的每一帧调用）。
+pub fn drag_window_to(offset: (f32, f32)) {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        SetWindowPos, SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER,
+    };
+    let Some(hwnd) = main_window() else {
+        return;
+    };
+    unsafe {
+        let mut point: POINT = std::mem::zeroed();
+        if GetCursorPos(&mut point) == 0 {
+            return;
+        }
+        let x = point.x - offset.0.round() as i32;
+        let y = point.y - offset.1.round() as i32;
+        SetWindowPos(
+            hwnd,
+            std::ptr::null_mut(),
+            x,
+            y,
+            0,
+            0,
+            SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
+        );
+    }
 }
 
 #[cfg(test)]

@@ -221,11 +221,9 @@ fn general(view: &mut AppView, p: &Palette, cx: &mut Context<AppView>) -> AnyEle
         .on_click(move |index: &usize, _, cx: &mut App| {
             let mode = ThemeMode::all()[*index];
             theme_app.update(cx, |view, cx| {
-                view.state.theme = mode;
-                view.dark = mode.is_dark(system_is_dark());
-                // 立即换掉组件主题与两个窗口的标题栏，否则要等下一次 tick
-                view.sync_kit_theme(cx);
-                cx.notify();
+                // 统一走 switch_theme：换色 + 把两个窗口的显隐恢复原样，
+                // 不再出现「切成深色后设置页消失、主窗口冒出来」
+                view.switch_theme(mode, cx);
             });
         })
         .children(

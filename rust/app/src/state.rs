@@ -233,6 +233,9 @@ pub struct AppState {
     pub next_run_at: Option<NaiveDateTime>,
     pub last_exit: Option<i32>,
     pub logs: Vec<LogLine>,
+    /// 日志版本号：每次追加/清空都 +1。界面靠它判断「这一帧要不要把日志贴底」——
+    /// 只比长度不够用（超过 600 行后会一直等长，看起来就像不滚了）。
+    pub log_revision: u64,
     pub draft: Draft,
     pub dirty: bool,
     pub theme: ThemeMode,
@@ -271,6 +274,7 @@ impl AppState {
             next_run_at: None,
             last_exit: None,
             logs,
+            log_revision: 0,
             draft,
             dirty: false,
             theme: ThemeMode::System,
@@ -520,6 +524,7 @@ impl AppState {
         let text = text.into();
         let time = Local::now().format("%H:%M:%S").to_string();
         self.append_to_file(&time, kind, &text);
+        self.log_revision = self.log_revision.wrapping_add(1);
         self.logs.push(LogLine {
             time,
             text,
@@ -814,6 +819,21 @@ mod tests {
         }
         assert_eq!(state.logs.len(), 600);
         assert!(state.logs.last().unwrap().text.contains("649"));
+    }
+
+    #[test]
+    fn 每条日志都推进版本号() {
+        // 界面靠版本号判断「要不要把日志贴底」：封顶 600 行后长度不再变，
+        // 只看长度会漏掉新日志，所以必须每次都加一。
+        let mut state = state_with_students("log-revision", TWO);
+        let start = state.log_revision;
+        state.log(LogKind::Info, "第一条");
+        assert_eq!(state.log_revision, start + 1);
+        for index in 0..650 {
+            state.log(LogKind::Info, format!("填充 {index}"));
+        }
+        assert_eq!(state.logs.len(), 600, "列表长度封顶");
+        assert_eq!(state.log_revision, start + 651, "版本号不能被封顶影响");
     }
 
     #[test]

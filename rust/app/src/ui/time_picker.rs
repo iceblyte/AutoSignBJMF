@@ -87,14 +87,11 @@ fn dropdown(
         )
         .cursor_pointer()
         .hover(|style| style.border_color(rgb(p.text_3)))
-        .on_click(cx.listener(move |this, event: &ClickEvent, _, cx| {
+        .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
             if this.open_select == target {
-                this.open_select = OpenSelect::None;
-                this.dropdown_at = None;
+                this.close_dropdown();
             } else {
-                this.open_select = target;
-                let pos = event.position();
-                this.dropdown_at = Some((target, pos.x, pos.y));
+                this.open_dropdown(target, event.position(), window);
             }
             cx.notify();
         }))
@@ -118,7 +115,7 @@ pub fn render(view: &mut AppView, p: &Palette, cx: &mut Context<AppView>) -> Any
                 .on_click(cx.listener(move |this, _, _, cx| {
                 this.picker_hour = h;
                 this.picker_minute = m;
-                this.open_select = OpenSelect::None;
+                this.close_dropdown();
                 cx.notify();
             }))
             .into_any_element()
@@ -136,7 +133,7 @@ pub fn render(view: &mut AppView, p: &Palette, cx: &mut Context<AppView>) -> Any
                 let (h, m) = now_pick();
                 this.picker_hour = h;
                 this.picker_minute = m;
-                this.open_select = OpenSelect::None;
+                this.close_dropdown();
                 cx.notify();
             }))
             .into_any_element()
@@ -216,6 +213,9 @@ pub fn render(view: &mut AppView, p: &Palette, cx: &mut Context<AppView>) -> Any
         .items_center()
         .justify_center()
         .bg(rgba(0x0f121675))
+        // 遮罩必须吃掉鼠标：否则点在弹窗外壳上会穿透到后面的主界面控件
+        // （时间选择器里点「时」会同时点到底下「失败重试」的下拉，就是这个原因）
+        .occlude()
         .child(
             div()
                 .w(px(PANEL_W))
@@ -258,7 +258,7 @@ pub fn render(view: &mut AppView, p: &Palette, cx: &mut Context<AppView>) -> Any
                                 .hover(|style| style.bg(rgb(p.surface_3)))
                                 .on_click(cx.listener(|this, _, _, cx| {
                                     this.overlay = Overlay::None;
-                                    this.open_select = OpenSelect::None;
+                                    this.close_dropdown();
                                     cx.notify();
                                 }))
                                 .child("×"),
@@ -305,7 +305,7 @@ pub fn render(view: &mut AppView, p: &Palette, cx: &mut Context<AppView>) -> Any
                                 .cursor_pointer()
                                 .on_click(cx.listener(|this, _, _, cx| {
                                     this.overlay = Overlay::None;
-                                    this.open_select = OpenSelect::None;
+                                    this.close_dropdown();
                                     cx.notify();
                                 })),
                         )
@@ -322,7 +322,7 @@ pub fn render(view: &mut AppView, p: &Palette, cx: &mut Context<AppView>) -> Any
                                             match this.state.add_time(&value) {
                                                 Ok(()) => {
                                                     this.overlay = Overlay::None;
-                                                    this.open_select = OpenSelect::None;
+                                                    this.close_dropdown();
                                                     this.error = None;
                                                 }
                                                 Err(error) => this.error = Some(error.0),

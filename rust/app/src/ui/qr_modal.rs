@@ -225,6 +225,9 @@ pub fn render(view: &mut AppView, p: &Palette, cx: &mut Context<AppView>) -> Any
         .items_center()
         .justify_center()
         .bg(rgba(0x0f121675))
+        // 遮罩必须吃掉鼠标：否则点在弹窗外壳上会穿透到后面的主界面控件
+        // （时间选择器里点「时」会同时点到底下「失败重试」的下拉，就是这个原因）
+        .occlude()
         .child(
             div()
                 .w(px(420.0))

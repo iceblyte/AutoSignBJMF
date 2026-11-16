@@ -102,9 +102,11 @@ fn main() {
     application().with_assets(Assets).run(move |cx| {
         gpui_kit::init(cx);
         let handle = open_window(options, cx, move |window, cx| {
+            // 同一个 entity 会被两个窗口渲染（主窗口 / 设置窗口），
+            // 记下主窗口的 id，界面靠它决定画哪一套
+            let main_window_id = window.window_handle().window_id();
             cx.new(|cx| {
-                let mut view = AppView::new(state, runtime.clone(), cx);
-                let _ = window;
+                let mut view = AppView::new(state, runtime.clone(), main_window_id, cx);
                 view.start_ticker(cx);
                 view
             })
