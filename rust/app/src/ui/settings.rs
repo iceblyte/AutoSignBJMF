@@ -223,6 +223,8 @@ fn general(view: &mut AppView, p: &Palette, cx: &mut Context<AppView>) -> AnyEle
             theme_app.update(cx, |view, cx| {
                 view.state.theme = mode;
                 view.dark = mode.is_dark(system_is_dark());
+                // 立即换掉组件主题与两个窗口的标题栏，否则要等下一次 tick
+                view.sync_kit_theme(cx);
                 cx.notify();
             });
         })
