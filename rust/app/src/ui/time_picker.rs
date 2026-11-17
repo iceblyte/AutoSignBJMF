@@ -4,17 +4,17 @@
 //! 布局沿用原型的组件语言：14px 圆角卡片 + 顶部标题栏 + 底部按钮行。
 
 use chrono::Timelike;
-use gpui_kit::base::StyledExt;
+use gpui_kit::component::select::Select;
 use gpui_kit::prelude::*;
-use gpui_kit::{div, px, rgba, rgb, AnyElement, ClickEvent, Context, SharedString};
+use gpui_kit::{div, px, rgba, rgb, AnyElement, Context, SharedString};
 
 use crate::theme::*;
-use crate::ui::main_view::{AppView, OpenSelect, Overlay};
+use crate::ui::main_view::{select_box, AppView, Overlay};
 use crate::ui::widgets::{button, choice_chip, click, BtnKind, BtnSize};
 
 const PANEL_W: f32 = 420.0;
 /// 分钟粒度：0, 5, 10 ... 55
-const MINUTE_STEP: u32 = 5;
+pub const MINUTE_STEP: u32 = 5;
 
 /// 快捷时间：早上上学、午间、晚上各一个。
 const QUICK: [(u32, u32); 3] = [(7, 30), (12, 0), (21, 30)];
@@ -49,59 +49,8 @@ fn pick_text(hour: u32, minute: u32) -> String {
     format!("{hour:02}:{minute:02}")
 }
 
-/// 一个下拉触发器（比输入框矮一点，和列表块同高）。
-fn dropdown(
-    value: String,
-    open: bool,
-    width: f32,
-    id: &'static str,
-    p: &Palette,
-    cx: &mut Context<AppView>,
-    target: OpenSelect,
-) -> AnyElement {
-    div()
-        .id(SharedString::from(id))
-        .w(px(width))
-        .h(px(32.0))
-        .flex_none()
-        .flex()
-        .items_center()
-        .gap(px(2.0))
-        .px(px(9.0))
-        .rounded(px(7.0))
-        .border_1()
-        .border_color(rgb(if open { p.accent } else { p.line_2 }))
-        .bg(rgb(p.surface))
-        .child(
-            div()
-                .flex_1()
-                .text_size(px(14.0))
-                .text_color(rgb(p.text))
-                .child(value),
-        )
-        .child(
-            div()
-                .text_size(px(9.0))
-                .text_color(rgb(p.text_3))
-                .child(if open { "▲" } else { "▼" }),
-        )
-        .cursor_pointer()
-        .hover(|style| style.border_color(rgb(p.text_3)))
-        .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
-            if this.open_select == target {
-                this.close_dropdown();
-            } else {
-                this.open_dropdown(target, event.position(), window);
-            }
-            cx.notify();
-        }))
-        .into_any_element()
-}
-
 pub fn render(view: &mut AppView, p: &Palette, cx: &mut Context<AppView>) -> AnyElement {
     let (hour, minute) = (view.picker_hour, view.picker_minute);
-    let open_hour = view.open_select == OpenSelect::Hour;
-    let open_minute = view.open_select == OpenSelect::Minute;
 
     // ---- 快捷时间：常用时刻 + 当前时间 ----
     let mut quick = div().flex().items_center().gap(px(4.0)).flex_wrap();
@@ -112,12 +61,10 @@ pub fn render(view: &mut AppView, p: &Palette, cx: &mut Context<AppView>) -> Any
             chip.into_any_element()
         } else {
             chip.id(SharedString::from(format!("quick-{h}-{m}")))
-                .on_click(cx.listener(move |this, _, _, cx| {
-                this.picker_hour = h;
-                this.picker_minute = m;
-                this.close_dropdown();
-                cx.notify();
-            }))
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    this.set_picker(h, m, window, cx);
+                    cx.notify();
+                }))
             .into_any_element()
         });
     }
@@ -129,35 +76,19 @@ pub fn render(view: &mut AppView, p: &Palette, cx: &mut Context<AppView>) -> Any
     } else {
         now_chip
             .id("quick-now")
-            .on_click(cx.listener(|this, _, _, cx| {
+            .on_click(cx.listener(|this, _, window, cx| {
                 let (h, m) = now_pick();
-                this.picker_hour = h;
-                this.picker_minute = m;
-                this.close_dropdown();
+                this.set_picker(h, m, window, cx);
                 cx.notify();
             }))
             .into_any_element()
     });
 
-    // ---- 时 / 分下拉 ----
-    let hour_dd = dropdown(
-        format!("{hour:02}"),
-        open_hour,
-        70.0,
-        "pick-hour",
-        p,
-        cx,
-        OpenSelect::Hour,
-    );
-    let minute_dd = dropdown(
-        format!("{minute:02}"),
-        open_minute,
-        70.0,
-        "pick-minute",
-        p,
-        cx,
-        OpenSelect::Minute,
-    );
+    // ---- 时 / 分下拉：组件库 Select（弹出层由库挂到 Root 上） ----
+    let hour_state = view.hour_select.clone();
+    let minute_state = view.minute_select.clone();
+    let hour_dd = select_box(70.0, Select::new(&hour_state));
+    let minute_dd = select_box(70.0, Select::new(&minute_state));
 
     // 时 / 分一行；展开的列表另起一行（否则会被 flex_row 挤到右边）
     let mut picker_block = div()
@@ -258,7 +189,6 @@ pub fn render(view: &mut AppView, p: &Palette, cx: &mut Context<AppView>) -> Any
                                 .hover(|style| style.bg(rgb(p.surface_3)))
                                 .on_click(cx.listener(|this, _, _, cx| {
                                     this.overlay = Overlay::None;
-                                    this.close_dropdown();
                                     cx.notify();
                                 }))
                                 .child("×"),
@@ -305,7 +235,6 @@ pub fn render(view: &mut AppView, p: &Palette, cx: &mut Context<AppView>) -> Any
                                 .cursor_pointer()
                                 .on_click(click(cx, |this, _, _, cx| {
                                     this.overlay = Overlay::None;
-                                    this.close_dropdown();
                                     cx.notify();
                                 })),
                         )
@@ -322,8 +251,7 @@ pub fn render(view: &mut AppView, p: &Palette, cx: &mut Context<AppView>) -> Any
                                             match this.state.add_time(&value) {
                                                 Ok(()) => {
                                                     this.overlay = Overlay::None;
-                                                    this.close_dropdown();
-                                                    this.error = None;
+                                                                    this.error = None;
                                                 }
                                                 Err(error) => this.error = Some(error.0),
                                             }

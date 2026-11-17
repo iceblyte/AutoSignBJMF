@@ -19,6 +19,9 @@ use gpui_kit::base::StyledExt;
 
 use gpui_kit::component::scroll::ScrollableElement;
 use gpui_kit::assets::IconNamed;
+use gpui_kit::component::select::{Select, SelectEvent, SelectState};
+use gpui_kit::component::Sizable as _;
+use gpui_kit::component::IndexPath;
 use gpui_kit::component::switch::Switch;
 use gpui_kit::component::IconName;
 
@@ -75,43 +78,6 @@ pub enum Overlay {
     ChannelEdit(Field),
 }
 
-/// 当前展开了哪个下拉列表（同一时刻只允许一个）。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum OpenSelect {
-    None,
-    RetryAttempts,
-    RetryDelay,
-    /// 时间选择器里的小时列表
-    Hour,
-    /// 时间选择器里的分钟列表
-    Minute,
-}
-
-/// 重试间隔的常用值（分钟），避免 60 个选项把列表拉太长。
-pub const RETRY_DELAYS: [u32; 10] = [1, 2, 3, 5, 10, 15, 20, 30, 45, 60];
-
-/// 下拉列表的列宽 / 行高 / 内边距。
-const DD_COL_W: f32 = 120.0;
-const DD_ROW_H: f32 = 26.0;
-const DD_PAD: f32 = 4.0;
-
-/// 每种下拉的 `(项数, 列数)`：项多就分列，别让列表跑到窗口外面去。
-pub fn dropdown_layout(kind: OpenSelect) -> (usize, usize) {
-    match kind {
-        OpenSelect::RetryAttempts => (10, 1),
-        OpenSelect::RetryDelay => (RETRY_DELAYS.len(), 1),
-        OpenSelect::Hour => (24, 2),
-        OpenSelect::Minute => (12, 2),
-        OpenSelect::None => (0, 1),
-    }
-}
-
-/// 给定列数的列表宽度。
-pub fn dropdown_width(columns: usize) -> f32 {
-    let columns = columns.max(1) as f32;
-    columns * DD_COL_W + (columns - 1.0) * 2.0 + DD_PAD * 2.0
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SettingsTab {
     General,
@@ -140,8 +106,13 @@ pub struct AppView {
     /// 时间选择器里当前选中的时 / 分
     pub picker_hour: u32,
     pub picker_minute: u32,
-    /// 当前展开的下拉（重试次数 / 重试间隔 / 时 / 分）
-    pub open_select: OpenSelect,
+    /// 重试次数下拉（1–10）
+    pub retry_attempts_select: Entity<SelectState<Vec<SharedString>>>,
+    /// 重试间隔下拉（1–60 分钟）
+    pub retry_delay_select: Entity<SelectState<Vec<SharedString>>>,
+    /// 时间选择器的小时 / 分钟下拉
+    pub hour_select: Entity<SelectState<Vec<SharedString>>>,
+    pub minute_select: Entity<SelectState<Vec<SharedString>>>,
     /// 设置窗口的句柄：有了它就说明设置已经开着（同一时刻只允许一个）。
     pub settings_window: Option<WindowId>,
     /// 正在开窗中：双击「设置」时不至于开出两个窗口
@@ -155,14 +126,6 @@ pub struct AppView {
     /// 输入框里的光标位置（字符下标，不是字节）：
     /// 左右键/Home/End 要能动，撤回删错也要删在光标前面。
     pub caret: usize,
-    /// 展开中的下拉浮层的左上角（窗口坐标）。
-    ///
-    /// 列表必须画在根层：主界面 body 和弹窗都是 overflow_hidden，
-    /// 放在原地展开会把窗口撑高，或者被裁掉一半。
-    pub dropdown_at: Option<(OpenSelect, Pixels, Pixels)>,
-    /// 展开中的下拉浮层的实际矩形 `(x, y, 宽, 高)`：
-    /// 遮罩要靠它判断「这次点击落在列表里还是外面」。
-    pub dropdown_rect: Option<(f32, f32, f32, f32)>,
     /// 日志区的滚动位置（日志多了要能翻）
     pub log_scroll: ScrollHandle,
     /// 上一次渲染时看到的日志版本号：变了就把日志区贴底。
@@ -184,11 +147,37 @@ pub struct AppView {
     pub close_signal: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
+/// 生成下拉选项文本：`number_labels(1, 10, 1, 0)` → ["1".."10"]，
+/// `number_labels(0, 23, 1, 2)` → ["00".."23"]。宽度 0 表示不补零。
+/// 把组件库的下拉塞进一个定宽的盒子里。
+///
+/// 库的 `Select` 内部用了 `size_full()`，外层宽度由父级决定；直接 `.w(px(..))`
+/// 会被内部撑开，所以统一用这个盒子里定宽。
+pub fn select_box(width: f32, select: impl IntoElement) -> AnyElement {
+    div().w(px(width)).flex_none().child(select).into_any_element()
+}
+
+fn number_labels(from: u32, to: u32, step: u32, width: usize) -> Vec<SharedString> {
+    let mut out = Vec::new();
+    let mut value = from;
+    while value <= to {
+        let text = if width > 0 {
+            format!("{value:0width$}")
+        } else {
+            value.to_string()
+        };
+        out.push(SharedString::from(text));
+        value += step.max(1);
+    }
+    out
+}
+
 impl AppView {
     pub fn new(
         state: AppState,
         runtime: std::sync::Arc<crate::runtime::Runtime>,
         main_window_id: WindowId,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
         // 用上次存下来的主题启动（缺字段/旧配置 → 跟随系统）
@@ -371,6 +360,81 @@ impl AppView {
             .detach();
         }
 
+        // ---- 下拉：全部用组件库的 Select（重试次数 / 重试间隔 / 时 / 分）----
+        // 库自己管弹出层、限高滚动、键盘上下、点外面收起，所以之前那套
+        // 「浮层遮罩 + 手算坐标 + 分列 + occlude」全部删掉了。
+        let attempts_index = state.settings.retry_attempts.clamp(1, 10) as usize - 1;
+        let delay_index = state.settings.retry_delay_minutes.clamp(1, 60) as usize - 1;
+        let retry_attempts_select = cx.new(|cx| {
+            SelectState::new(
+                number_labels(1, 10, 1, 0),
+                Some(IndexPath::new(attempts_index)),
+                window,
+                cx,
+            )
+        });
+        let retry_delay_select = cx.new(|cx| {
+            SelectState::new(
+                number_labels(1, 60, 1, 0),
+                Some(IndexPath::new(delay_index)),
+                window,
+                cx,
+            )
+        });
+        let hour_select = cx.new(|cx| {
+            SelectState::new(
+                number_labels(0, 23, 1, 2),
+                Some(IndexPath::new(picker_hour as usize)),
+                window,
+                cx,
+            )
+        });
+        let minute_select = cx.new(|cx| {
+            SelectState::new(
+                number_labels(0, 55, crate::ui::time_picker::MINUTE_STEP, 2),
+                Some(IndexPath::new((picker_minute / crate::ui::time_picker::MINUTE_STEP) as usize)),
+                window,
+                cx,
+            )
+        });
+
+        cx.subscribe_in(&retry_attempts_select, window, |this, _, event, _, cx| {
+            if let SelectEvent::Confirm(Some(value)) = event {
+                if let Ok(attempts) = value.to_string().parse::<u32>() {
+                    let _ = this.state.set_retry_attempts(attempts);
+                    cx.notify();
+                }
+            }
+        })
+        .detach();
+        cx.subscribe_in(&retry_delay_select, window, |this, _, event, _, cx| {
+            if let SelectEvent::Confirm(Some(value)) = event {
+                if let Ok(delay) = value.to_string().parse::<u32>() {
+                    let _ = this.state.set_retry_delay(delay);
+                    cx.notify();
+                }
+            }
+        })
+        .detach();
+        cx.subscribe_in(&hour_select, window, |this, _, event, _, cx| {
+            if let SelectEvent::Confirm(Some(value)) = event {
+                if let Ok(hour) = value.to_string().parse::<u32>() {
+                    this.picker_hour = hour;
+                    cx.notify();
+                }
+            }
+        })
+        .detach();
+        cx.subscribe_in(&minute_select, window, |this, _, event, _, cx| {
+            if let SelectEvent::Confirm(Some(value)) = event {
+                if let Ok(minute) = value.to_string().parse::<u32>() {
+                    this.picker_minute = minute;
+                    cx.notify();
+                }
+            }
+        })
+        .detach();
+
         let mut view = Self {
             state,
             runtime,
@@ -385,9 +449,10 @@ impl AppView {
             qr_error: None,
             picker_hour,
             picker_minute,
-            open_select: OpenSelect::None,
-            dropdown_at: None,
-            dropdown_rect: None,
+            retry_attempts_select,
+            retry_delay_select,
+            hour_select,
+            minute_select,
             settings_window: None,
             settings_opening: false,
             main_window_id: Some(main_window_id),
@@ -406,29 +471,6 @@ impl AppView {
             close_signal: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         };
 
-        // 截图/QA：AUTOSIGN_PICKER=hour|minute|attempts|delay 直接把对应下拉展开
-        if let Ok(kind) = std::env::var("AUTOSIGN_PICKER") {
-            let selected = match kind.as_str() {
-                "hour" => OpenSelect::Hour,
-                "minute" => OpenSelect::Minute,
-                "attempts" => OpenSelect::RetryAttempts,
-                "delay" => OpenSelect::RetryDelay,
-                _ => OpenSelect::None,
-            };
-            view.open_select = selected;
-            if selected != OpenSelect::None {
-                // 浮层需要位置，这里给一个固定点用于截图（没有 window 可量，按固定值摆）
-                let (count, columns) = dropdown_layout(selected);
-                let rows = count.div_ceil(columns.max(1));
-                view.dropdown_at = Some((selected, px(430.0), px(430.0)));
-                view.dropdown_rect = Some((
-                    430.0,
-                    430.0,
-                    dropdown_width(columns),
-                    rows as f32 * DD_ROW_H + DD_PAD * 2.0 + 2.0,
-                ));
-            }
-        }
         // QA：AUTOSIGN_TEST_SCENE=1 复现用户操作序列
         // 开设置 → 隐藏设置 → 隐藏主窗口 → 再开设置（应能弹出）
         if std::env::var("AUTOSIGN_TEST_SCENE").is_ok() {
@@ -1021,6 +1063,29 @@ impl AppView {
     /// 之前是从设置页里直接改 `dark` 再 `sync_kit_theme`，而 `Theme::change`
     /// 会刷新所有窗口 —— 一旦某个窗口被顺带显示/顶到别的窗口后面，
     /// 用户看到的就是「设置页没了、主窗口冒出来」。
+    /// 同步「添加执行时间」的当前值：改字段，同时把两个下拉的选中项摆正。
+    ///
+    /// 组件库的 Select 自己保存选中项，所以改 picker_hour/minute 时必须一起改，
+    /// 否则界面上显示的还是旧值（这是自研下拉换库之后最容易漏的一处）。
+    pub fn set_picker(
+        &mut self,
+        hour: u32,
+        minute: u32,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.picker_hour = hour.min(23);
+        self.picker_minute = minute;
+        let hour_index = self.picker_hour as usize;
+        let minute_index = (self.picker_minute / crate::ui::time_picker::MINUTE_STEP) as usize;
+        self.hour_select.update(cx, |state, cx| {
+            state.set_selected_index(Some(IndexPath::new(hour_index)), window, cx);
+        });
+        self.minute_select.update(cx, |state, cx| {
+            state.set_selected_index(Some(IndexPath::new(minute_index)), window, cx);
+        });
+    }
+
     pub fn switch_theme(&mut self, mode: ThemeMode, cx: &mut Context<Self>) {
         if self.state.theme == mode && self.dark == mode.is_dark(system_is_dark()) {
             return;
@@ -1060,11 +1125,6 @@ impl AppView {
     /// 下拉浮层 → 弹窗覆盖层 → 都没有就把窗口收到托盘（和点 ✕ 一致）。
     /// 参考 ElegantClipboard 的 dismiss_or_hide：先收临时层，最后才动窗口。
     fn dismiss_or_hide(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.dropdown_at.is_some() {
-            self.close_dropdown();
-            cx.notify();
-            return;
-        }
         if self.overlay != Overlay::None {
             // 编辑密钥时按 Esc = 放弃改动
             if let Overlay::ChannelEdit(_) = self.overlay {
@@ -1099,48 +1159,6 @@ impl AppView {
     pub fn run_now(&mut self) {
         self.runtime.request_run_now();
         self.state.log(LogKind::Info, "已请求立即签到");
-    }
-
-    /// 打开一个下拉浮层：按窗口大小算好位置（下面放不下就往上翻）。
-    ///
-    /// 位置必须在这一步夹住：浮层画在根层，超出窗口的部分连点都点不到。
-    pub fn open_dropdown(&mut self, kind: OpenSelect, at: Point<Pixels>, window: &Window) {
-        let (count, columns) = dropdown_layout(kind);
-        if count == 0 {
-            return;
-        }
-        let rows = count.div_ceil(columns.max(1));
-        let width = dropdown_width(columns);
-        let height = rows as f32 * DD_ROW_H + DD_PAD * 2.0 + 2.0;
-        let viewport = window.viewport_size();
-        let margin = px(6.0);
-
-        let mut x = at.x;
-        if x + px(width) > viewport.width - margin {
-            x = viewport.width - px(width) - margin;
-        }
-        if x < margin {
-            x = margin;
-        }
-        let mut y = at.y + px(4.0);
-        if y + px(height) > viewport.height - margin {
-            // 下面放不下就翻到点击点上方
-            y = at.y - px(height) - px(4.0);
-        }
-        if y < margin {
-            y = margin;
-        }
-
-        self.open_select = kind;
-        self.dropdown_at = Some((kind, x, y));
-        self.dropdown_rect = Some((f32::from(x), f32::from(y), width, height));
-    }
-
-    /// 收起下拉浮层。
-    pub fn close_dropdown(&mut self) {
-        self.dropdown_at = None;
-        self.dropdown_rect = None;
-        self.open_select = OpenSelect::None;
     }
 
     /// 把当前日志复制到剪贴板（Win32 Unicode，中文不会乱码）。
@@ -2034,13 +2052,11 @@ impl AppView {
             chip_add("＋ 添加", p)
                 .id("add-time")
                 .cursor_pointer()
-                .on_click(cx.listener(|this, _, _window, cx| {
+                .on_click(cx.listener(|this, _, window, cx| {
                     // 不再让用户手打 21:31:00，直接弹时间列表点选
                     let (hour, minute) =
                         crate::ui::time_picker::default_pick(&this.state.settings.times);
-                    this.picker_hour = hour;
-                    this.picker_minute = minute;
-                    this.open_select = OpenSelect::None;
+                    this.set_picker(hour, minute, window, cx);
                     this.overlay = Overlay::TimePicker;
                     cx.notify();
                 }))
@@ -2048,28 +2064,18 @@ impl AppView {
         });
 
         // 重试次数与间隔都改成下拉点选，不再手输数字
-        let attempts_value = self.state.settings.retry_attempts;
-        let delay_value = self.state.settings.retry_delay_minutes;
-
-        let attempts = select_trigger(
-            format!("{attempts_value}"),
-            self.open_select == OpenSelect::RetryAttempts,
-            62.0,
-            "retry-attempts",
-            readonly,
-            OpenSelect::RetryAttempts,
-            p,
-            cx,
+        // 宽度靠外层定死：库的 Select 内部是 size_full()，直接 .w() 不一定生效
+        let attempts = select_box(
+            64.0,
+            Select::new(&self.retry_attempts_select)
+                .small()
+                .disabled(readonly),
         );
-        let delay = select_trigger(
-            format!("{delay_value}"),
-            self.open_select == OpenSelect::RetryDelay,
-            62.0,
-            "retry-delay",
-            readonly,
-            OpenSelect::RetryDelay,
-            p,
-            cx,
+        let delay = select_box(
+            64.0,
+            Select::new(&self.retry_delay_select)
+                .small()
+                .disabled(readonly),
         );
 
         let mut panel = div()
@@ -2810,202 +2816,6 @@ fn notify_block(
         .into_any_element()
 }
 
-/// 根据当前展开的下拉，构造浮层里的选项列表。
-fn dropdown_overlay(
-    kind: OpenSelect,
-    view: &mut AppView,
-    p: &Palette,
-    cx: &mut Context<AppView>,
-) -> AnyElement {
-    let (items, columns): (Vec<(String, bool)>, usize) = match kind {
-        OpenSelect::RetryAttempts => {
-            let current = view.state.settings.retry_attempts;
-            (
-                (1..=10u32)
-                    .map(|n| (format!("{n} 次"), n == current))
-                    .collect(),
-                dropdown_layout(kind).1,
-            )
-        }
-        OpenSelect::RetryDelay => {
-            let current = view.state.settings.retry_delay_minutes;
-            (
-                RETRY_DELAYS
-                    .iter()
-                    .map(|n| (format!("{n} 分钟"), *n == current))
-                    .collect(),
-                dropdown_layout(kind).1,
-            )
-        }
-        OpenSelect::Hour => {
-            let current = view.picker_hour;
-            (
-                (0..24u32)
-                    .map(|h| (format!("{h:02} 时"), h == current))
-                    .collect(),
-                dropdown_layout(kind).1,
-            )
-        }
-        OpenSelect::Minute => {
-            let current = view.picker_minute;
-            (
-                (0..(60 / 5))
-                    .map(|index| {
-                        let m = index * 5;
-                        (format!("{m:02} 分"), m == current)
-                    })
-                    .collect(),
-                dropdown_layout(kind).1,
-            )
-        }
-        OpenSelect::None => return div().into_any_element(),
-    };
-
-    dropdown_list(items, columns, "overlay-list", p, cx, move |this, index| {
-        match kind {
-            OpenSelect::RetryAttempts => {
-                let _ = this.state.set_retry_attempts(index as u32 + 1);
-            }
-            OpenSelect::RetryDelay => {
-                let _ = this.state.set_retry_delay(RETRY_DELAYS[index]);
-            }
-            OpenSelect::Hour => this.picker_hour = index as u32,
-            OpenSelect::Minute => this.picker_minute = index as u32 * 5,
-            OpenSelect::None => {}
-        }
-        this.close_dropdown();
-    })
-}
-
-/// 下拉列表：竖直选项，项多时按列铺开，保证整块都在窗口里。
-///
-/// 这里有两个坑，别再踩：
-/// 1. 列表必须 `occlude_mouse()`。浮层底下铺了一张全屏遮罩（点别处收起），
-///    遮罩和列表是兄弟节点，命中判定会把两者都收进事件链 —— 遮罩的
-///    `on_mouse_down` 会抢在选项的 click 之前把列表关掉，于是「点选项没反应、
-///    列表自己收起」。让列表吃掉鼠标，事件链就到此为止。
-/// 2. 列表不能无限长。24 小时的列表一列铺下去有 600 多像素，超出窗口的部分
-///    连点都点不到，所以按列铺开 + 打开时按窗口大小翻转。
-pub fn dropdown_list(
-    items: Vec<(String, bool)>,
-    columns: usize,
-    prefix: &'static str,
-    p: &Palette,
-    cx: &mut Context<AppView>,
-    on_pick: impl Fn(&mut AppView, usize) + 'static,
-) -> AnyElement {
-    let on_pick = std::rc::Rc::new(on_pick);
-    let columns = columns.max(1);
-    let rows = items.len().div_ceil(columns);
-
-    let mut grid = div().flex().flex_row().gap(px(2.0)).items_start();
-    for column_index in 0..columns {
-        let mut column = div().flex().flex_col().w(px(DD_COL_W)).flex_none();
-        for row_index in 0..rows {
-            let index = column_index * rows + row_index;
-            let Some((label, selected)) = items.get(index) else {
-                // 最后一列可能不满，用空白占位保持对齐
-                column = column.child(div().h(px(DD_ROW_H)).w_full().flex_none());
-                continue;
-            };
-            let callback = on_pick.clone();
-            let base = div()
-                .id(SharedString::from(format!("{prefix}-item-{index}")))
-                .h(px(DD_ROW_H))
-                .w_full()
-                .flex_none()
-                .flex()
-                .items_center()
-                .px(px(8.0))
-                .rounded(px(5.0))
-                .text_size(px(12.0))
-                .child(label.clone());
-
-            column = column.child(if *selected {
-                base.bg(rgb(p.accent))
-                    .text_color(rgb(0xffffff))
-                    .into_any_element()
-            } else {
-                base.text_color(rgb(p.text_2))
-                    .cursor_pointer()
-                    .hover(|style| style.bg(rgb(p.surface_3)).text_color(rgb(p.text)))
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        callback(this, index);
-                        cx.notify();
-                    }))
-                    .into_any_element()
-            });
-        }
-        grid = grid.child(column);
-    }
-
-    div()
-        .id(SharedString::from(format!("{prefix}-list")))
-        .w(px(dropdown_width(columns)))
-        .flex_none()
-        .rounded(px(8.0))
-        .border_1()
-        .border_color(rgb(p.line_2))
-        .bg(rgb(p.surface))
-        // 选中态是实底，不裁剪的话会盖住圆角
-        .overflow_hidden()
-        // 吃掉鼠标：别让底下的遮罩把这次点击当成「点外面」
-        .occlude()
-        .p(px(DD_PAD))
-        .child(grid)
-        .into_any_element()
-}
-
-/// 下拉触发器：外观像输入框，右侧一个 ▼，点开后在下方展开列表。
-fn select_trigger(
-    value: String,
-    open: bool,
-    width: f32,
-    id: &'static str,
-    readonly: bool,
-    target: OpenSelect,
-    p: &Palette,
-    cx: &mut Context<AppView>,
-) -> AnyElement {
-    let mut trigger = div()
-        .id(SharedString::from(format!("select-{id}")))
-        .w(px(width))
-        .h(px(30.0))
-        .flex_none()
-        .flex()
-        .items_center()
-        .gap(px(2.0))
-        .px(px(8.0))
-        .rounded(px(7.0))
-        .border_1()
-        .border_color(rgb(if open { p.accent } else { p.line_2 }))
-        .bg(rgb(p.surface))
-        .text_size(px(12.0))
-        .text_color(rgb(p.text))
-        .child(div().flex_1().child(value))
-        .child(
-            div()
-                .text_size(px(9.0))
-                .text_color(rgb(p.text_3))
-                .child(if open { "▲" } else { "▼" }),
-        );
-
-    if !readonly {
-        trigger = trigger
-            .cursor_pointer()
-            .hover(|style| style.border_color(rgb(p.text_3)))
-            .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
-                if this.open_select == target {
-                    this.close_dropdown();
-                } else {
-                    this.open_dropdown(target, event.position(), window);
-                }
-                cx.notify();
-            }));
-    }
-    trigger.into_any_element()
-}
-
 /// 窄输入框（保留给以后可能的手输场景）。
 fn narrow_field(input: AnyElement, _p: &Palette) -> AnyElement {
     div().w(px(56.0)).flex_none().child(input).into_any_element()
@@ -3164,42 +2974,6 @@ impl Render for AppView {
             Overlay::None => {}
         }
 
-        // 下拉浮层画在最上层：底下垫一个透明遮罩，点别处收起。
-        // 注意遮罩只负责「点外面」，落在列表矩形里的点击直接放过 ——
-        // 否则遮罩的 mouse_down 会先把列表拆掉，选项的 click 根本来不及成立。
-        if let Some((kind, x, y)) = self.dropdown_at {
-            let rect = self.dropdown_rect;
-            root = root
-                .child(
-                    div()
-                        .absolute()
-                        .inset_0()
-                        .on_mouse_down(
-                            MouseButton::Left,
-                            cx.listener(move |this, event: &gpui_kit::MouseDownEvent, _, cx| {
-                                if let Some((rx, ry, rw, rh)) = rect {
-                                    let point = event.position;
-                                    let inside = f32::from(point.x) >= rx
-                                        && f32::from(point.x) <= rx + rw
-                                        && f32::from(point.y) >= ry
-                                        && f32::from(point.y) <= ry + rh;
-                                    if inside {
-                                        return;
-                                    }
-                                }
-                                this.close_dropdown();
-                                cx.notify();
-                            }),
-                        ),
-                )
-                .child(
-                    div()
-                        .absolute()
-                        .left(x)
-                        .top(y)
-                        .child(dropdown_overlay(kind, self, p, cx)),
-                );
-        }
         root = root.on_mouse_down(
             MouseButton::Left,
             cx.listener(|this, event: &gpui_kit::MouseDownEvent, _, cx| {

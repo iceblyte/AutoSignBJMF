@@ -106,7 +106,7 @@ fn main() {
             // 记下主窗口的 id，界面靠它决定画哪一套
             let main_window_id = window.window_handle().window_id();
             cx.new(|cx| {
-                let mut view = AppView::new(state, runtime.clone(), main_window_id, cx);
+                let mut view = AppView::new(state, runtime.clone(), main_window_id, window, cx);
                 view.start_ticker(cx);
                 view
             })
