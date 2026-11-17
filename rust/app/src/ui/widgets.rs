@@ -93,8 +93,6 @@ pub enum BtnKind {    /// 默认：白底 + 描边
     Default,
     /// 主按钮 `.btn-p`：强调色底
     Primary,
-    /// 幽灵 `.btn-g`：无描边
-    Ghost,
     /// 危险 `.btn-danger`：红字
     Danger,
 }
@@ -110,39 +108,6 @@ pub enum BtnSize {
     Xs,
 }
 
-impl BtnSize {
-    fn height(self) -> f32 {
-        match self {
-            BtnSize::Normal => 32.0,
-            BtnSize::Small => 28.0,
-            BtnSize::Xs => 24.0,
-        }
-    }
-
-    fn padding(self) -> f32 {
-        match self {
-            BtnSize::Normal => 13.0,
-            BtnSize::Small => 10.0,
-            BtnSize::Xs => 8.0,
-        }
-    }
-
-    fn font(self) -> f32 {
-        match self {
-            BtnSize::Normal => 13.0,
-            BtnSize::Small => 12.5,
-            BtnSize::Xs => 11.5,
-        }
-    }
-
-    fn radius(self) -> f32 {
-        match self {
-            BtnSize::Normal => 8.0,
-            BtnSize::Small => 6.0,
-            BtnSize::Xs => 5.0,
-        }
-    }
-}
 
 /// 把 `cx.listener(...)` 的写法适配成组件库的回调签名。
 ///
@@ -220,8 +185,7 @@ impl RenderOnce for Btn {
         button = match self.kind {
             BtnKind::Default => button,
             BtnKind::Primary => button.primary(),
-            BtnKind::Ghost => button.ghost(),
-            BtnKind::Danger => button.danger(),
+                BtnKind::Danger => button.danger(),
         };
         button = match self.size {
             BtnSize::Normal => button,
@@ -363,16 +327,6 @@ pub fn mix(color: u32, onto: u32, amount: f32) -> u32 {
 mod tests {
     use super::*;
     use crate::theme::LIGHT;
-
-    #[test]
-    fn 按钮尺寸与原型一致() {
-        assert_eq!(BtnSize::Normal.height(), 32.0);
-        assert_eq!(BtnSize::Small.height(), 28.0);
-        assert_eq!(BtnSize::Xs.height(), 24.0);
-        assert_eq!(BtnSize::Normal.padding(), 13.0);
-        assert_eq!(BtnSize::Small.font(), 12.5);
-        assert_eq!(BtnSize::Xs.radius(), 5.0);
-    }
 
     #[test]
     fn 混色在两色之间() {

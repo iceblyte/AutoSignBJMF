@@ -52,8 +52,6 @@ pub enum Overlay {
     CloseHint,
     /// 添加执行时间：从列表点选，不手输
     TimePicker,
-    /// 编辑通知渠道的密钥（微信 / QQ）：既能看也能改
-    ChannelEdit(Field),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1040,9 +1038,6 @@ impl AppView {
     fn dismiss_or_hide(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.overlay != Overlay::None {
             // 编辑密钥时按 Esc = 放弃改动
-            if let Overlay::ChannelEdit(_) = self.overlay {
-                self.state.reload_draft();
-            }
             self.overlay = Overlay::None;
             cx.notify();
             return;
@@ -1127,11 +1122,7 @@ impl AppView {
 
     /// 「编辑」：弹窗里改该渠道的密钥（草稿先按磁盘内容重灌一次）。
     fn open_channel_editor(&mut self, field: Field, window: &mut Window, cx: &mut Context<Self>) {
-        // 草稿按磁盘内容重灌（版本号 +1），下一帧会把值推回输入框
-        self.state.reload_draft();
-        self.overlay = Overlay::ChannelEdit(field);
-        self.sync_inputs(window, cx);
-        cx.notify();
+        crate::ui::channel_modal::open(self, field, window, cx);
     }
 
     /// 保存弹窗里改过的密钥：只动这一个字段，不碰坐标与重试设置。
@@ -1162,14 +1153,12 @@ impl AppView {
                 .state
                 .log(LogKind::Bad, format!("保存{name}密钥失败：{error}")),
         }
-        self.overlay = Overlay::None;
         cx.notify();
     }
 
     /// 放弃编辑：把草稿按磁盘内容重灌。
     pub fn cancel_channel_edit(&mut self, cx: &mut Context<Self>) {
         self.state.reload_draft();
-        self.overlay = Overlay::None;
         cx.notify();
     }
 
@@ -2573,14 +2562,9 @@ fn notify_block(
                         format!("已关闭{name}，密钥仍保留在 data.json 里")
                     },
                 );
-                // 关掉渠道时，正在编辑该渠道的弹窗一并收起（草稿丢弃）
+                // 关掉渠道时把草稿重灌一次：正在编辑的密钥不会漏进保存流程
                 if !next {
-                    if let Overlay::ChannelEdit(open) = this.overlay {
-                        if open == field {
-                            this.state.reload_draft();
-                            this.overlay = Overlay::None;
-                        }
-                    }
+                    this.state.reload_draft();
                 }
                 cx.notify();
             });
@@ -2797,9 +2781,6 @@ impl Render for AppView {
             Overlay::Settings(_) | Overlay::CloseHint => {}
             Overlay::Qr => root = root.child(crate::ui::qr_modal::render(self, p, cx)),
             Overlay::TimePicker => root = root.child(crate::ui::time_picker::render(self, p, cx)),
-            Overlay::ChannelEdit(_) => {
-                root = root.child(crate::ui::channel_modal::render(self, p, cx));
-            }
             Overlay::None => {}
         }
 
