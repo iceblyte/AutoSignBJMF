@@ -264,6 +264,8 @@ impl AppState {
             });
         // 启动时接上今天已经写下的日志（最近 200 行）
         let logs = Self::load_recent_logs(&paths, 200);
+        // 主题存在 settings 里，取出来先算好，免得下面 move 走后再借
+        let theme = ThemeMode::from_key(&settings.theme);
         Self {
             paths,
             config,
@@ -277,7 +279,7 @@ impl AppState {
             log_revision: 0,
             draft,
             dirty: false,
-            theme: ThemeMode::System,
+            theme,
             failed: BTreeSet::new(),
             needs_login: BTreeSet::new(),
         }
@@ -297,6 +299,35 @@ impl AppState {
 
     pub fn has_accounts(&self) -> bool {
         !self.config.students.is_empty()
+    }
+
+    /// 记住主题选择：写进 `settings.json`，重启后还在。
+    ///
+    /// 失败也不阻断：界面已经切过去了，只是下次启动会回到旧值，记一条日志即可。
+    pub fn save_theme(&mut self, mode: ThemeMode) -> Result<(), FieldError> {
+        self.theme = mode;
+        self.settings.theme = mode.key().to_string();
+        self.settings
+            .save(self.paths.settings_file())
+            .map_err(|error| FieldError(format!("保存设置失败：{error}")))
+    }
+
+    /// 删掉一个账号之后，把「失败 / 需登录」的下标记号整体挪位。
+    ///
+    /// 这两个集合按下标记录状态，删除中间账号后如果不挪，状态就会串到别人身上：
+    /// 删掉 0 号之后，1 号的「签到失败」会被当成现在占着 0 号位置的那个人的。
+    pub fn on_account_removed(&mut self, index: usize) {
+        fn shift(set: &mut BTreeSet<usize>, index: usize) {
+            let old = std::mem::take(set);
+            for item in old {
+                if item == index {
+                    continue; // 被删账号的状态直接丢掉
+                }
+                set.insert(if item > index { item - 1 } else { item });
+            }
+        }
+        shift(&mut self.failed, index);
+        shift(&mut self.needs_login, index);
     }
 
     /// 切到另一个账号：草稿跟着换，未保存的改动丢弃（与原型一致）。
@@ -657,6 +688,46 @@ mod tests {
         assert_eq!(state.selected, 1);
         assert_eq!(state.draft.lat, "");
         assert!(!state.dirty);
+    }
+
+    #[test]
+    fn 删除账号后状态下标跟着挪位() {
+        let mut state = state_with_students("reindex", TWO);
+        // 0 号失败、1 号需重登
+        state.apply_outcome(0, bjmf_core::SignStatus::Error);
+        state.apply_outcome(1, bjmf_core::SignStatus::Skip);
+        assert!(state.failed.contains(&0));
+        assert!(state.needs_login.contains(&1));
+
+        // 删掉 0 号：原来的 1 号变成 0 号，1 号的状态要跟着走
+        state.on_account_removed(0);
+        assert!(!state.failed.contains(&0), "被删账号的失败状态不能留下");
+        assert!(state.needs_login.contains(&0), "原来的 1 号现在在 0 号位置");
+        assert!(!state.needs_login.contains(&1), "越界状态不能留着");
+    }
+
+    #[test]
+    fn 删除末尾账号只丢自己的状态() {
+        let mut state = state_with_students("reindex-tail", TWO);
+        state.apply_outcome(0, bjmf_core::SignStatus::Error);
+        state.apply_outcome(1, bjmf_core::SignStatus::Skip);
+
+        state.on_account_removed(1);
+        assert!(state.failed.contains(&0), "前面的账号不受影响");
+        assert!(state.needs_login.is_empty());
+    }
+
+    #[test]
+    fn 主题会写进设置文件() {
+        let mut state = state_with_students("theme", TWO);
+        assert_eq!(state.theme, ThemeMode::System, "缺字段时跟随系统");
+        state.save_theme(ThemeMode::Dark).unwrap();
+        assert_eq!(state.theme, ThemeMode::Dark);
+        assert_eq!(Settings::load(state.paths.settings_file()).theme, "dark");
+
+        // 重新加载也要读回来
+        let reloaded = AppState::load(state.paths.clone());
+        assert_eq!(reloaded.theme, ThemeMode::Dark);
     }
 
     #[test]

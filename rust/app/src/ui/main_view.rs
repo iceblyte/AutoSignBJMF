@@ -71,10 +71,8 @@ pub enum Overlay {
     CloseHint,
     /// 添加执行时间：从列表点选，不手输
     TimePicker,
-    /// 编辑通知渠道的密钥（微信 / QQ）
+    /// 编辑通知渠道的密钥（微信 / QQ）：既能看也能改
     ChannelEdit(Field),
-    /// 查看通知渠道的密钥（打码显示）
-    ChannelView(Field),
 }
 
 /// 当前展开了哪个下拉列表（同一时刻只允许一个）。
@@ -154,6 +152,9 @@ pub struct AppView {
     pub main_hidden: bool,
     /// 拖动窗口中的偏移（光标相对窗口左上角），`None` 表示没在拖。
     pub window_drag: Option<(f32, f32)>,
+    /// 输入框里的光标位置（字符下标，不是字节）：
+    /// 左右键/Home/End 要能动，撤回删错也要删在光标前面。
+    pub caret: usize,
     /// 展开中的下拉浮层的左上角（窗口坐标）。
     ///
     /// 列表必须画在根层：主界面 body 和弹窗都是 overflow_hidden，
@@ -190,7 +191,8 @@ impl AppView {
         main_window_id: WindowId,
         cx: &mut Context<Self>,
     ) -> Self {
-        let dark = ThemeMode::System.is_dark(system_is_dark());
+        // 用上次存下来的主题启动（缺字段/旧配置 → 跟随系统）
+        let dark = state.theme.is_dark(system_is_dark());
         let focus = (0..Field::ALL.len())
             .map(|_| cx.focus_handle())
             .collect::<Vec<_>>();
@@ -391,6 +393,7 @@ impl AppView {
             main_window_id: Some(main_window_id),
             main_hidden: false,
             window_drag: None,
+            caret: 0,
             log_scroll: ScrollHandle::new(),
             log_revision_seen: None,
             tick_count: 0,
@@ -541,6 +544,31 @@ impl AppView {
                 crate::system::win::show_main_window();
                 self.main_hidden = false;
                 self.overlay = Overlay::None;
+                // 窗口是被 ShowWindow 直接显示的，gpui 在 WM_SHOWWINDOW 里画的那一帧
+                // 拿不到新的布局/场景 —— 右上角的「— ✕」要等鼠标移进窗口才补上。
+                // 这里主动刷新：先立刻刷一次，再隔一帧补一次（显示动画期间可能被打断）。
+                if let Some(main) = self.main_window_id {
+                    if let Some(handle) =
+                        cx.windows().into_iter().find(|h| h.window_id() == main)
+                    {
+                        let _ = handle.update(cx, |_, window, _| window.refresh());
+                    }
+                }
+                cx.notify();
+                let main = self.main_window_id;
+                cx.spawn(async move |_this, cx| {
+                    cx.background_executor()
+                        .timer(std::time::Duration::from_millis(120))
+                        .await;
+                    let Some(main) = main else { return };
+                    let handle = cx.update(|app| {
+                        app.windows().into_iter().find(|h| h.window_id() == main)
+                    });
+                    if let Some(handle) = handle {
+                        let _ = handle.update(cx, |_, window, _| window.refresh());
+                    }
+                })
+                .detach();
             }
             TrayCommand::Settings => {
                 // 只弹设置页：主窗口该藏着就继续藏着
@@ -622,15 +650,39 @@ impl AppView {
         };
         gpui_kit::component::Theme::change(mode, None, cx);
         // 立刻把「所有窗口」的标题栏都刷一遍：等 tick 或等下次渲染都会有肉眼可见的延迟
-        let dark = self.dark;
-        for handle in cx.windows() {
-            let _ = handle.update(cx, |_, window, _| {
-                crate::system::win::set_dark_titlebar(window, dark);
-            });
-        }
-        self.titled_windows.clear();
-        self.titlebar_dark = Some(dark);
+        self.sync_titlebars(cx);
         true
+    }
+
+    /// 给每个窗口单独设一次系统标题栏明暗。
+    ///
+    /// 设置窗口是后来才建的，它创建时拿到的是系统默认（浅色）。只在「主题变化」
+    /// 的那一刻刷一遍会漏掉它 —— 深色外观下设置页顶着一条白标题栏就是这么来的。
+    /// 这里按窗口各记一笔，新窗口进来补一次，不用每秒重复调 DWM。
+    fn sync_titlebars(&mut self, cx: &mut App) {
+        let dark = self.dark;
+        if self.titlebar_dark != Some(dark) {
+            self.titlebar_dark = Some(dark);
+            self.titled_windows.clear();
+        }
+        let mut done = Vec::new();
+        for handle in cx.windows() {
+            let id = handle.window_id();
+            if self.titled_windows.contains(&id) {
+                continue;
+            }
+            let ok = handle
+                .update(cx, |_, window, _| {
+                    crate::system::win::set_dark_titlebar(window, dark);
+                })
+                .is_ok();
+            if ok {
+                done.push(id);
+            }
+        }
+        for id in done {
+            self.titled_windows.insert(id);
+        }
     }
 
     /// 诊断用：看一眼 tick 是否还在跑。
@@ -640,15 +692,9 @@ impl AppView {
 
     pub fn tick(&mut self, cx: &mut Context<Self>) {
         self.tick_count = self.tick_count.saturating_add(1);
-        if self.sync_kit_theme(cx) {
-            // 标题栏由 DWM 画：这里没有 window 引用，遍历所有窗口逐个设置
-            let dark = self.dark;
-            for handle in cx.windows() {
-                let _ = handle.update(cx, |_, window, _| {
-                    crate::system::win::set_dark_titlebar(window, dark);
-                });
-            }
-        }
+        self.sync_kit_theme(cx);
+        // 标题栏由 DWM 画：新开的窗口（设置页）要在这里补一次
+        self.sync_titlebars(cx);
         let (running, paused, next, last_exit) = self.runtime.snapshot();
         self.state.running = running;
         self.state.paused = paused;
@@ -721,9 +767,12 @@ impl AppView {
         });
     }
 
+    /// 键盘输入。所有编辑都作用在「光标处」，不是一律追加到末尾 ——
+    /// 之前左右键根本没有反应，插入/删除也只认末尾，改个中间的数字只能全删重打。
     fn on_key(&mut self, field: Field, event: &KeyDownEvent, cx: &mut Context<Self>) {
         let key = event.keystroke.key.as_str();
-        let mut value = self.value_of(field);
+        let mut chars: Vec<char> = self.value_of(field).chars().collect();
+        let mut caret = self.caret.min(chars.len());
 
         // Ctrl+V 粘贴：gpui 只给按键，剪贴板要自己读
         if event.keystroke.modifiers.control {
@@ -731,19 +780,37 @@ impl AppView {
                 "v" => {
                     if let Some(text) = crate::system::win::clipboard_text() {
                         // 单行输入框：换行与制表符直接去掉
-                        let cleaned: String = text
+                        let cleaned: Vec<char> = text
                             .chars()
                             .filter(|c| *c != '\r' && *c != '\n' && *c != '\t')
                             .collect();
-                        value.push_str(&cleaned);
-                        self.set_value(field, value);
+                        let added = cleaned.len();
+                        for (offset, ch) in cleaned.into_iter().enumerate() {
+                            chars.insert(caret + offset, ch);
+                        }
+                        caret += added;
+                        self.caret = caret;
+                        self.set_value(field, chars.into_iter().collect());
                     }
                     cx.notify();
                     return;
                 }
                 "a" => {
                     // 全选后再输入即替换：这里退化成清空，符合单行输入框的直觉
+                    self.caret = 0;
                     self.set_value(field, String::new());
+                    cx.notify();
+                    return;
+                }
+                "c" | "x" => {
+                    // 没有选区概念，「复制/剪切全部」最接近的语义是整段复制
+                    let _ = crate::ui::main_view::copy_to_clipboard(&chars.iter().collect::<String>());
+                    if key == "x" {
+                        chars.clear();
+                        caret = 0;
+                        self.caret = 0;
+                        self.set_value(field, String::new());
+                    }
                     cx.notify();
                     return;
                 }
@@ -753,10 +820,23 @@ impl AppView {
 
         match key {
             "backspace" => {
-                value.pop();
+                if caret > 0 {
+                    chars.remove(caret - 1);
+                    caret -= 1;
+                }
             }
+            "delete" => {
+                if caret < chars.len() {
+                    chars.remove(caret);
+                }
+            }
+            "left" => caret = caret.saturating_sub(1),
+            "right" => caret = (caret + 1).min(chars.len()),
+            "home" => caret = 0,
+            "end" => caret = chars.len(),
             "escape" => {
                 self.active = None;
+                self.caret = 0;
                 cx.notify();
                 return;
             }
@@ -767,6 +847,7 @@ impl AppView {
                         match self.state.add_time(&raw) {
                             Ok(()) => {
                                 self.add_time.clear();
+                                self.caret = 0;
                                 self.error = None;
                             }
                             Err(error) => self.error = Some(error.0),
@@ -776,18 +857,27 @@ impl AppView {
                 cx.notify();
                 return;
             }
-            "space" => value.push(' '),
+            "space" => {
+                chars.insert(caret, ' ');
+                caret += 1;
+            }
             "tab" => {}
             _ => {
                 if let Some(text) = event.keystroke.key_char.as_ref() {
                     // 只接受可打印字符；中文输入法在本工具里没有场景（全是坐标/数字/Key）
                     if !text.is_empty() && !text.chars().any(|c| c.is_control()) {
-                        value.push_str(text);
+                        let added: Vec<char> = text.chars().collect();
+                        let count = added.len();
+                        for (offset, ch) in added.into_iter().enumerate() {
+                            chars.insert(caret + offset, ch);
+                        }
+                        caret += count;
                     }
                 }
             }
         }
-        self.set_value(field, value);
+        self.caret = caret;
+        self.set_value(field, chars.into_iter().collect());
         cx.notify();
     }
 
@@ -877,6 +967,11 @@ impl AppView {
                 Ok(handle) => {
                     let id = handle.window_id();
                     crate::ui_debug("open_settings: created ok");
+                    // 新窗口拿到的是系统默认标题栏；深色主题下要立刻刷成深色
+                    let dark = this.update(cx, |view, _| view.dark).unwrap_or(false);
+                    let _ = handle.update(cx, |_, window, _| {
+                        crate::system::win::set_dark_titlebar(window, dark);
+                    });
                     let _ = this.update(cx, |view, cx| {
                         view.settings_window = Some(id);
                         view.settings_opening = false;
@@ -900,10 +995,12 @@ impl AppView {
     /// 关闭设置窗口（设置页里的「完成」与标题栏 ✕ 都走这里）。
     pub fn close_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let id = window.window_handle().window_id();
-        if self.settings_window != Some(id) {
+        // 判据用「这不是主窗口」，而不是「等于记录的 settings_window」：
+        // 记录万一过期，「完成」按钮就会变成点了没反应。这里以事实为准。
+        if self.main_window_id == Some(id) {
             self.state.log(
                 LogKind::Warn,
-                "关闭设置窗口被忽略：当前不是设置窗口".to_string(),
+                "关闭设置窗口被忽略：当前是主窗口".to_string(),
             );
             cx.notify();
             return;
@@ -925,22 +1022,34 @@ impl AppView {
     /// 会刷新所有窗口 —— 一旦某个窗口被顺带显示/顶到别的窗口后面，
     /// 用户看到的就是「设置页没了、主窗口冒出来」。
     pub fn switch_theme(&mut self, mode: ThemeMode, cx: &mut Context<Self>) {
-        self.state.theme = mode;
+        if self.state.theme == mode && self.dark == mode.is_dark(system_is_dark()) {
+            return;
+        }
         self.dark = mode.is_dark(system_is_dark());
         self.sync_kit_theme(cx);
+
+        // 落盘：下次启动还是这个主题。写失败只记一行日志，不打断界面切换。
+        if let Err(error) = self.state.save_theme(mode) {
+            self.state
+                .log(LogKind::Warn, format!("主题已切换，但{}", error.0));
+        }
+
         self.restore_window_visibility(cx);
         cx.notify();
     }
 
     /// 主题刷新后把窗口显隐恢复原样（该藏的继续藏，设置窗口保持可见）。
     fn restore_window_visibility(&mut self, cx: &mut App) {
+        // 主窗口该藏就继续藏着（切主题不负责把它叫出来）
         if self.main_hidden {
             crate::system::win::hide_main_window();
         }
         if let Some(id) = self.settings_window {
             if let Some(handle) = cx.windows().into_iter().find(|h| h.window_id() == id) {
+                // 这里**不能**让它抢前台，否则会把用户正在看的设置页顶到后面；
+                // 也不能碰主窗口，否则主窗口会被激活盖住设置页。
                 let _ = handle.update(cx, |_, window, _| {
-                    crate::system::win::show_window_without_focus(window);
+                    crate::system::win::keep_visible_without_activate(window);
                 });
             }
         }
@@ -1095,13 +1204,6 @@ impl AppView {
         cx.notify();
     }
 
-    /// 「查看」：弹窗里打码看一眼当前密钥。
-    fn open_channel_viewer(&mut self, field: Field, cx: &mut Context<Self>) {
-        self.overlay = Overlay::ChannelView(field);
-        self.active = None;
-        cx.notify();
-    }
-
     /// 保存弹窗里改过的密钥：只动这一个字段，不碰坐标与重试设置。
     pub fn save_channel_key(&mut self, field: Field, cx: &mut Context<Self>) {
         let index = self.state.selected;
@@ -1237,13 +1339,36 @@ impl AppView {
         if index >= self.state.students().len() {
             return;
         }
+        let was_selected = index;
+
+        // 「失败 / 需登录 / 单独暂停」都是按账号下标记的，删之前先整体挪位：
+        // 不挪的话，删掉中间账号会让后面的人继承前一个人的状态。
+        let paused = self.runtime.paused_accounts();
+        self.state.on_account_removed(index);
+        for old in &paused {
+            self.runtime.set_account_paused(*old, false);
+        }
+        for old in paused {
+            match old.cmp(&index) {
+                std::cmp::Ordering::Less => self.runtime.set_account_paused(old, true),
+                std::cmp::Ordering::Greater => self.runtime.set_account_paused(old - 1, true),
+                std::cmp::Ordering::Equal => {} // 被删掉的那个，暂停状态一起丢掉
+            }
+        }
+
         let removed = self.state.config.students.remove(index);
         let _ = self.state.config.save(self.state.paths.config_file());
         if self.state.students().is_empty() {
             self.state.selected = 0;
             self.state.reload_draft();
         } else {
-            let next = index.min(self.state.students().len() - 1);
+            // 删的是别人：当前选中的人不变（下标要 -1）；
+            // 删的正是当前这个人：顺位选下一个，末尾则退一个。
+            let next = if was_selected > index {
+                was_selected - 1
+            } else {
+                index.min(self.state.students().len() - 1)
+            };
             self.state.select(next);
         }
         self.state.log(
@@ -2415,12 +2540,24 @@ impl AppView {
         };
 
         let text_color = if empty { p.text_3 } else { p.text };
-        let shown = if empty {
-            placeholder.to_string()
-        } else {
-            raw.clone()
-        };
         let size = if mono { 12.5 } else { 13.0 };
+
+        // 光标画在真正的位置上：把文本按光标切成「前半段 + 竖线 + 后半段」。
+        // 之前竖线永远钉在末尾，按左右键文本没变、竖线也不动，看着像没反应。
+        let chars: Vec<char> = raw.chars().collect();
+        let caret = if focused && !readonly {
+            self.caret.min(chars.len())
+        } else {
+            chars.len()
+        };
+        let (head, tail) = if empty {
+            (String::new(), placeholder.to_string())
+        } else {
+            (
+                chars[..caret].iter().collect::<String>(),
+                chars[caret..].iter().collect::<String>(),
+            )
+        };
 
         let mut element = div()
             .id(("field", index))
@@ -2429,20 +2566,30 @@ impl AppView {
             .w_full()
             .min_w_0();
 
+        let span = |text: String, color: u32| {
+            div()
+                .text_size(px(size))
+                .text_color(rgb(color))
+                .child(text)
+        };
+
         let mut frame = input_frame(focused, readonly, false, p)
             .w_full()
             .flex()
             .items_center()
             .gap(px(1.0))
-            .child(
-                div()
-                    .text_size(px(size))
-                    .text_color(rgb(text_color))
-                    .child(shown),
-            );
+            .child(span(head, text_color));
         if focused && !readonly {
-            frame = frame.child(div().w(px(1.0)).h(px(14.0)).bg(rgb(p.accent)));
+            // 空值时光标要有地方站：给一个最小宽度，不然会贴在边框上
+            frame = frame.child(
+                div()
+                    .flex_none()
+                    .w(px(1.0))
+                    .h(px(14.0))
+                    .bg(rgb(p.accent)),
+            );
         }
+        frame = frame.child(span(tail, text_color));
         element = element.child(frame);
 
         if readonly {
@@ -2456,6 +2603,7 @@ impl AppView {
                 MouseButton::Left,
                 cx.listener(move |this, _, window, cx| {
                     this.active = Some(field);
+                    this.caret = this.value_of(field).chars().count();
                     window.focus(&this.focus[index], cx);
                     // 别让事件冒到根节点：根节点的 mouse_down 负责「点到别处就收光标」，
                     // 不拦住的话刚点进来就被收掉了（表现是输入框永远聚焦不上）。
@@ -2624,17 +2772,9 @@ fn notify_block(
                         this.open_channel_editor(field, window, cx);
                     })),
             )
-            .child(
-                button("查看", BtnKind::Default, BtnSize::Xs, false, p)
-                    .id(SharedString::from(format!(
-                        "channel-view-{}",
-                        channel_field_label(field)
-                    )))
-                    .cursor_pointer()
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.open_channel_viewer(field, cx);
-                    })),
-            );
+            // 「查看」去掉：密钥在「编辑」弹窗里就是明文，一眼能看全，
+            // 多一个只读弹窗反而多一层点击。
+            ;
     } else {
         actions = actions.child(
             div()
@@ -3018,7 +3158,7 @@ impl Render for AppView {
             Overlay::Settings(_) | Overlay::CloseHint => {}
             Overlay::Qr => root = root.child(crate::ui::qr_modal::render(self, p, cx)),
             Overlay::TimePicker => root = root.child(crate::ui::time_picker::render(self, p, cx)),
-            Overlay::ChannelEdit(_) | Overlay::ChannelView(_) => {
+            Overlay::ChannelEdit(_) => {
                 root = root.child(crate::ui::channel_modal::render(self, p, cx));
             }
             Overlay::None => {}

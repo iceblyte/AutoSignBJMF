@@ -120,6 +120,27 @@ impl ThemeMode {
     pub fn all() -> [ThemeMode; 3] {
         [ThemeMode::Light, ThemeMode::Dark, ThemeMode::System]
     }
+
+    /// 落盘用的短名（`settings.json` 的 `theme` 字段）。
+    pub fn key(self) -> &'static str {
+        match self {
+            ThemeMode::Light => "light",
+            ThemeMode::Dark => "dark",
+            ThemeMode::System => "system",
+        }
+    }
+
+    /// 从 `settings.json` 读回来；不认识的值按「跟随系统」。
+    ///
+    /// 与 `core::settings::normalize` 的口径保持一致：那边已经把非法值收敛成
+    /// `system`，这里再兜一层，防止将来有人手改配置文件.
+    pub fn from_key(key: &str) -> ThemeMode {
+        match key.trim() {
+            "light" => ThemeMode::Light,
+            "dark" => ThemeMode::Dark,
+            _ => ThemeMode::System,
+        }
+    }
 }
 
 /// 读注册表里的系统主题：`AppsUseLightTheme = 0` 表示深色。
@@ -225,6 +246,17 @@ mod tests {
         assert!(ThemeMode::Dark.is_dark(false));
         assert!(ThemeMode::System.is_dark(true));
         assert!(!ThemeMode::System.is_dark(false));
+    }
+
+    #[test]
+    fn 主题短名可以往返() {
+        for mode in ThemeMode::all() {
+            assert_eq!(ThemeMode::from_key(mode.key()), mode);
+        }
+        // 不认识的、大小写不对的、手改坏的，一律跟随系统
+        assert_eq!(ThemeMode::from_key("Dark"), ThemeMode::System);
+        assert_eq!(ThemeMode::from_key(""), ThemeMode::System);
+        assert_eq!(ThemeMode::from_key("  light  "), ThemeMode::Light);
     }
 
     #[test]

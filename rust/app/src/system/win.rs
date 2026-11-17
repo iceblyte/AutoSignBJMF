@@ -7,9 +7,10 @@ use std::ffi::c_void;
 
 use windows_sys::Win32::Foundation::RECT;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    EnumWindows, FindWindowW, GetCursorPos, GetWindow, GetWindowRect, GetWindowThreadProcessId,
+    EnumWindows, FindWindowW, GetCursorPos, GetForegroundWindow, GetWindow, GetWindowRect,
+    GetWindowThreadProcessId,
     IsIconic, IsWindow, IsWindowVisible, IsZoomed, MessageBoxW, SetForegroundWindow, ShowWindow,
-    ShowWindowAsync, GW_OWNER, MB_ICONINFORMATION, MB_OK, SW_HIDE, SW_RESTORE, SW_SHOW,
+    ShowWindowAsync, GW_OWNER, MB_ICONINFORMATION, MB_OK, SW_HIDE, SW_RESTORE, SW_SHOW, SW_SHOWNA,
     SW_SHOWMAXIMIZED,
 };
 use windows_sys::Win32::Foundation::POINT;
@@ -31,8 +32,8 @@ fn wide(text: &str) -> Vec<u16> {
 fn force_foreground(hwnd: *mut c_void) {
     use windows_sys::Win32::System::Threading::AttachThreadInput;
     use windows_sys::Win32::UI::WindowsAndMessaging::{
-        BringWindowToTop, GetForegroundWindow, GetWindowThreadProcessId, SetWindowPos, HWND_NOTOPMOST,
-        HWND_TOPMOST, SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW,
+        BringWindowToTop, GetForegroundWindow, GetWindowThreadProcessId, SetWindowPos,
+        HWND_NOTOPMOST, HWND_TOPMOST, SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW,
     };
     unsafe {
         let foreground = GetForegroundWindow();
@@ -309,11 +310,15 @@ pub fn set_dark_titlebar(window: &gpui_kit::Window, dark: bool) {
         if first != 0 {
             DwmSetWindowAttribute(hwnd, 19, &value as *const i32 as *const c_void, size);
         }
-        // 切完让窗口重画一次标题栏
+        // 切完让窗口重画一次标题栏。
+        //
+        // `SWP_NOACTIVATE` 必须带上：没有它 SetWindowPos 会把窗口激活（= 提到最前），
+        // 于是「切主题」会顺手把主窗口顶到设置页前面，看起来像设置页自己关了。
         let mut rect: RECT = std::mem::zeroed();
         if GetWindowRect(hwnd, &mut rect) != 0 {
             use windows_sys::Win32::UI::WindowsAndMessaging::{
-                SetWindowPos, SWP_FRAMECHANGED, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER,
+                SetWindowPos, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
+                SWP_NOZORDER,
             };
             SetWindowPos(
                 hwnd,
@@ -322,7 +327,7 @@ pub fn set_dark_titlebar(window: &gpui_kit::Window, dark: bool) {
                 0,
                 0,
                 0,
-                SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED,
             );
         }
     }
@@ -396,13 +401,28 @@ pub fn show_main_window() -> bool {
     }
 }
 
-/// 只显示、不抢焦点。用于「主题切换后把窗口显隐恢复原样」这类场景：
-/// 该在的就露出来，但不该把正在操作的那个窗口顶掉。
-pub fn show_window_without_focus(window: &gpui_kit::Window) -> bool {
+/// 只保证「可见」，既不改 z-order 也不抢焦点。
+///
+/// 用于「主题切换后把窗口显隐恢复原样」：该在的就露出来，但绝不能把用户
+/// 正在操作的那个窗口顶到后面（`SW_SHOW` 会激活窗口，`SW_SHOWNA` 不会）。
+pub fn keep_visible_without_activate(window: &gpui_kit::Window) -> bool {
     match window_hwnd_of(window) {
         Some(hwnd) => unsafe {
-            let command = if IsIconic(hwnd) != 0 { SW_RESTORE } else { SW_SHOW };
-            ShowWindow(hwnd, command) != 0
+            if IsWindowVisible(hwnd) != 0 {
+                return true;
+            }
+            let command = if IsIconic(hwnd) != 0 {
+                // 最小化还原没有「不激活」的版本，还原后把前台还给原来的窗口
+                let foreground = GetForegroundWindow();
+                let shown = ShowWindow(hwnd, SW_SHOWNA) != 0;
+                if !foreground.is_null() {
+                    SetForegroundWindow(foreground);
+                }
+                shown
+            } else {
+                ShowWindow(hwnd, SW_SHOWNA) != 0
+            };
+            command
         },
         None => false,
     }
