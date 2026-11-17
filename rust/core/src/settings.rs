@@ -26,6 +26,8 @@ pub const MAX_RETRY_ATTEMPTS: u32 = 10;
 /// 代价是：如果用户在 Python 版存过 120，Rust 版读进来会收敛成 60。
 pub const MAX_RETRY_DELAY_MINUTES: u32 = 60;
 pub const DEFAULT_ACC: &str = "30";
+/// 默认主题：跟随系统（与旧版本行为一致）。
+pub const DEFAULT_THEME: &str = "system";
 
 /// 本机设置。字段与 `settings.json` 同名同序。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -43,6 +45,11 @@ pub struct Settings {
     pub minimize_to_tray: bool,
     /// 签到上报的定位精度（米）。
     pub acc: String,
+    /// 界面主题：`light` / `dark` / `system`。
+    ///
+    /// 只影响本机外观，但必须落盘：否则每次重启都回到「跟随系统」，
+    /// 用户选过的深色等于白选。
+    pub theme: String,
 }
 
 impl Default for Settings {
@@ -54,6 +61,7 @@ impl Default for Settings {
             autostart: true,
             minimize_to_tray: true,
             acc: DEFAULT_ACC.to_string(),
+            theme: DEFAULT_THEME.to_string(),
         }
     }
 }
@@ -114,6 +122,13 @@ impl Settings {
             _ => DEFAULT_ACC.to_string(),
         };
 
+        // 主题只有三个合法值，其它（含缺字段、拼错）一律按「跟随系统」
+        let theme = match obj.get("theme").and_then(|value| value.as_str()) {
+            Some("light") => "light".to_string(),
+            Some("dark") => "dark".to_string(),
+            _ => DEFAULT_THEME.to_string(),
+        };
+
         Self {
             times,
             retry_attempts,
@@ -127,6 +142,7 @@ impl Settings {
                 .map(truthy)
                 .unwrap_or(default.minimize_to_tray),
             acc,
+            theme,
         }
     }
 
@@ -239,6 +255,40 @@ mod tests {
         assert_eq!(loaded.retry_delay_minutes, 5);
         assert!(loaded.minimize_to_tray);
         assert!(loaded.autostart, "开机自启默认开启");
+    }
+
+    #[test]
+    fn 主题只认三个值_其余回退跟随系统() {
+        let dark = Settings::normalize(&json!({"theme": "dark"}));
+        assert_eq!(dark.theme, "dark");
+
+        let light = Settings::normalize(&json!({"theme": "light"}));
+        assert_eq!(light.theme, "light");
+
+        // 老配置没有这个字段
+        let missing = Settings::normalize(&json!({}));
+        assert_eq!(missing.theme, DEFAULT_THEME);
+        assert_eq!(missing.theme, "system");
+
+        // 拼错/类型不对也不能读坏
+        assert_eq!(Settings::normalize(&json!({"theme": "Dark"})).theme, "system");
+        assert_eq!(Settings::normalize(&json!({"theme": 1})).theme, "system");
+    }
+
+    #[test]
+    fn 主题能落盘再读回() {
+        let path = temp("theme.json");
+        let settings = Settings {
+            theme: "dark".to_string(),
+            ..Settings::default()
+        };
+        settings.save(&path).unwrap();
+        assert_eq!(Settings::load(&path).theme, "dark");
+        assert!(
+            fs::read_to_string(&path).unwrap().contains("\"theme\""),
+            "必须真的写进 settings.json"
+        );
+        let _ = fs::remove_file(&path);
     }
 
     #[test]

@@ -10,7 +10,7 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use crate::model::{Config, Student};
-use crate::notify::{first_wx_key, Notifier};
+use crate::notify::Notifier;
 use crate::site::{SignOutcome, SignStatus, Site};
 
 /// 一轮执行的汇总。
@@ -44,6 +44,25 @@ impl Report {
             .map(|outcome| (outcome.name.as_str(), outcome.status.as_str()))
             .collect()
     }
+}
+
+/// 去重后的非空 Key 列表（保持原有顺序）。
+///
+/// 多个账号写同一个 Key 时只发一次：Server 酱 / Qmsg 酱按 Key 计费，
+/// 重复发只会刷屏。空 Key 直接丢掉。
+fn unique_keys<'a, I>(keys: I) -> Vec<String>
+where
+    I: IntoIterator<Item = &'a str>,
+{
+    let mut out: Vec<String> = Vec::new();
+    for key in keys {
+        let key = key.trim();
+        if key.is_empty() || out.iter().any(|existing| existing == key) {
+            continue;
+        }
+        out.push(key.to_string());
+    }
+    out
 }
 
 /// 执行器。`log` 是日志回调，界面把行流进日志面板，CLI 直接打印。
@@ -111,43 +130,54 @@ impl<'a, L: FnMut(&str)> Runner<'a, L> {
             }
         }
 
-        // 汇总通知：取第一个非空 WXKey（与 Python 相同）
-        let wx_key = first_wx_key(
-            config
-                .students
-                .iter()
-                .filter(|student| student.wx_enabled())
-                .map(|student| student.wx_key.as_str()),
-        );
-        match wx_key {
-            Some(key) if !report.outcomes.is_empty() => {
-                match self.notifier.send_summary(key, &report.outcomes) {
-                    Ok(true) => report.notified = true,
+        // 汇总通知：每个渠道、每个配了 Key 的账号都发一份。
+        //
+        // 以前只取「第一个非空的 Key」发一次 —— 多账号场景下其余 Key 永远收不到，
+        // 用户配了好几个反而不知道哪个在生效。现在逐个发，重复的 Key 只发一次。
+        if !report.outcomes.is_empty() {
+            let message = crate::notify::summary_message(&report.outcomes);
+            let wx_keys = unique_keys(
+                config
+                    .students
+                    .iter()
+                    .filter(|student| student.wx_enabled())
+                    .map(|student| student.wx_key.as_str()),
+            );
+            let qq_keys = unique_keys(
+                config
+                    .students
+                    .iter()
+                    .filter(|student| student.qq_enabled())
+                    .map(|student| student.qmsg_key.as_str()),
+            );
+
+            if wx_keys.is_empty() {
+                (self.log)("未配置 WXKey 或微信通知已关闭，跳过微信汇总");
+            }
+            for key in wx_keys {
+                match self.notifier.send_wx(&key, &message) {
+                    Ok(true) => {
+                        report.notified = true;
+                        (self.log)("微信汇总通知已发送");
+                    }
                     Ok(false) => (self.log)("微信汇总通知未发送（Key 为空）"),
                     Err(error) => (self.log)(&format!("微信汇总通知发送失败：{error}")),
                 }
             }
-            _ => (self.log)("未配置 WXKey 或微信通知已关闭，跳过微信汇总"),
-        }
 
-        // QQ 通知（Qmsg 酱）：之前这里根本没调用过，等于 QQ 渠道从未生效
-        let qq_key = first_wx_key(
-            config
-                .students
-                .iter()
-                .filter(|student| student.qq_enabled())
-                .map(|student| student.qmsg_key.as_str()),
-        );
-        match qq_key {
-            Some(key) if !report.outcomes.is_empty() => {
-                let message = crate::notify::summary_message(&report.outcomes);
-                match self.notifier.send_qq(key, &message) {
-                    Ok(true) => report.notified = true,
+            if qq_keys.is_empty() {
+                (self.log)("未配置 QmsgKEY 或 QQ 通知已关闭，跳过 QQ 汇总");
+            }
+            for key in qq_keys {
+                match self.notifier.send_qq(&key, &message) {
+                    Ok(true) => {
+                        report.notified = true;
+                        (self.log)("QQ 汇总通知已发送");
+                    }
                     Ok(false) => (self.log)("QQ 汇总通知未发送（Key 为空）"),
                     Err(error) => (self.log)(&format!("QQ 汇总通知发送失败：{error}")),
                 }
             }
-            _ => (self.log)("未配置 QmsgKEY 或 QQ 通知已关闭，跳过 QQ 汇总"),
         }
 
         report
@@ -345,6 +375,42 @@ mod tests {
 
         assert!(!report.notified);
         assert_eq!(notify_mock.hits(), 0);
+    }
+
+    #[test]
+    fn 多个渠道多个_key_都要发且重复_key_只发一次() {
+        let server = MockServer::start();
+        let site = healthy_site(&server);
+        let wx_a = server.mock(|when, then| {
+            when.method(POST).path("/WXA.send");
+            then.status(200);
+        });
+        let wx_b = server.mock(|when, then| {
+            when.method(POST).path("/WXB.send");
+            then.status(200);
+        });
+        let qq_a = server.mock(|when, then| {
+            when.method(POST).path("/send/QQA");
+            then.status(200);
+        });
+        let notifier = Notifier::new(server.base_url(), server.base_url()).unwrap();
+        // 两个账号各配一套；第二个账号的 WXKey 与第一个重复
+        let path = temp_config(
+            "multi-key.json",
+            r#"{"students":[
+                {"name":"张明远","class":"2000001","lat":"39.9","lng":"116.4","acc":"30","cookie":"c","WXKey":"WXA","QmsgKEY":"QQA"},
+                {"name":"林可欣","class":"2000001","lat":"39.9","lng":"116.4","acc":"30","cookie":"c","WXKey":"WXA","QmsgKEY":""}
+            ]}"#,
+        );
+
+        let mut runner = Runner::new(&site, &notifier, &path, |_| {});
+        let report = runner.run_once();
+
+        assert!(report.notified);
+        assert_eq!(wx_a.hits(), 1, "重复的 Key 只发一次");
+        assert_eq!(qq_a.hits(), 1, "QQ 渠道也要发");
+        // 另一个不同 Key 的账号不存在，这里只是确保没有多发
+        assert_eq!(wx_b.hits(), 0);
     }
 
     #[test]
