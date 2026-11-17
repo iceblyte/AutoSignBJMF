@@ -144,9 +144,9 @@ def cmd_types(text):
 
 
 def cmd_key(vk):
-    u.keybd_event(int(vk), 0, 0, 0)
+    u.keybd_event(int(vk, 0), 0, 0, 0)
     time.sleep(0.02)
-    u.keybd_event(int(vk), 0, 2, 0)
+    u.keybd_event(int(vk, 0), 0, 2, 0)
     print(f"key {vk}")
 
 
