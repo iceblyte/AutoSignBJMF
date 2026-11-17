@@ -14,7 +14,7 @@ use gpui_kit::{div, px, rgba, rgb, AnyElement, Context, Div};
 use crate::state::mask_key;
 use crate::theme::*;
 use crate::ui::main_view::{channel_field_label, channel_hint, channel_name, AppView, Overlay};
-use crate::ui::widgets::{button, BtnKind, BtnSize};
+use crate::ui::widgets::{button, click, BtnKind, BtnSize};
 
 const PANEL_W: f32 = 470.0;
 
@@ -144,7 +144,7 @@ pub fn render(view: &mut AppView, p: &Palette, cx: &mut Context<AppView>) -> Any
                             button("取消", BtnKind::Default, BtnSize::Small, false, p)
                                 .id("channel-cancel")
                                 .cursor_pointer()
-                                .on_click(cx.listener(|this, _, _, cx| {
+                                .on_click(click(cx, |this, _, _, cx| {
                                     this.cancel_channel_edit(cx);
                                 })),
                         )
@@ -152,7 +152,7 @@ pub fn render(view: &mut AppView, p: &Palette, cx: &mut Context<AppView>) -> Any
                             button("保存", BtnKind::Primary, BtnSize::Small, false, p)
                                 .id("channel-save")
                                 .cursor_pointer()
-                                .on_click(cx.listener(move |this, _, _, cx| {
+                                .on_click(click(cx, move |this, _, _, cx| {
                                     this.save_channel_key(field, cx);
                                 })),
                         ),

@@ -290,7 +290,7 @@ fn general(view: &mut AppView, p: &Palette, cx: &mut Context<AppView>) -> AnyEle
                     button("完成", BtnKind::Primary, BtnSize::Small, false, p)
                         .id("settings-done")
                         .cursor_pointer()
-                        .on_click(cx.listener(|view, _, window, cx| {
+                        .on_click(click(cx, |view, _, window, cx| {
                             view.close_settings(window, cx);
                         })),
                 ),
@@ -324,7 +324,7 @@ fn data(view: &mut AppView, p: &Palette, cx: &mut Context<AppView>) -> AnyElemen
                             button("打开", BtnKind::Default, BtnSize::Small, false, p)
                                 .id("open-data-dir")
                                 .cursor_pointer()
-                                .on_click(cx.listener(|view, _, _, cx| {
+                                .on_click(click(cx, |view, _, _, cx| {
                                     let path = view.state.data_dir().display().to_string();
                                     let _ = crate::ui::main_view::open_url(&path);
                                     cx.notify();
@@ -354,7 +354,7 @@ fn data(view: &mut AppView, p: &Palette, cx: &mut Context<AppView>) -> AnyElemen
                     button("导出配置（.json）", BtnKind::Default, BtnSize::Small, false, p)
                         .id("export-config")
                         .cursor_pointer()
-                        .on_click(cx.listener(|view, _, _, cx| {
+                        .on_click(click(cx, |view, _, _, cx| {
                             view.export_config(cx);
                             cx.notify();
                         })),
@@ -363,7 +363,7 @@ fn data(view: &mut AppView, p: &Palette, cx: &mut Context<AppView>) -> AnyElemen
                     button("导入配置", BtnKind::Default, BtnSize::Small, false, p)
                         .id("import-config-settings")
                         .cursor_pointer()
-                        .on_click(cx.listener(|view, _, _, cx| {
+                        .on_click(click(cx, |view, _, _, cx| {
                             view.import_config(cx);
                             cx.notify();
                         })),
@@ -389,7 +389,7 @@ fn data(view: &mut AppView, p: &Palette, cx: &mut Context<AppView>) -> AnyElemen
                     button("完成", BtnKind::Primary, BtnSize::Small, false, p)
                         .id("settings-done-data")
                         .cursor_pointer()
-                        .on_click(cx.listener(|view, _, window, cx| {
+                        .on_click(click(cx, |view, _, window, cx| {
                             view.close_settings(window, cx);
                         })),
                 ),

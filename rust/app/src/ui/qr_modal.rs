@@ -342,7 +342,7 @@ pub fn render(view: &mut AppView, p: &Palette, cx: &mut Context<AppView>) -> Any
                             button("取消", BtnKind::Default, BtnSize::Small, false, p)
                                 .id("qr-cancel")
                                 .cursor_pointer()
-                                .on_click(cx.listener(|view, _, _, cx| {
+                                .on_click(click(cx, |view, _, _, cx| {
                                     view.overlay = Overlay::None;
                                     view.qr = None;
                                     view.qr_image = None;
@@ -354,7 +354,7 @@ pub fn render(view: &mut AppView, p: &Palette, cx: &mut Context<AppView>) -> Any
                             button("重新生成", BtnKind::Primary, BtnSize::Small, !waiting, p)
                                 .id("qr-refresh")
                                 .cursor_pointer()
-                                .on_click(cx.listener(|view, _, _, cx| {
+                                .on_click(click(cx, |view, _, _, cx| {
                                     view.qr_image = None;
                                     view.qr_error = None;
                                     let path = view.state.paths.config_file();

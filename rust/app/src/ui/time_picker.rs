@@ -10,7 +10,7 @@ use gpui_kit::{div, px, rgba, rgb, AnyElement, ClickEvent, Context, SharedString
 
 use crate::theme::*;
 use crate::ui::main_view::{AppView, OpenSelect, Overlay};
-use crate::ui::widgets::{button, choice_chip, BtnKind, BtnSize};
+use crate::ui::widgets::{button, choice_chip, click, BtnKind, BtnSize};
 
 const PANEL_W: f32 = 420.0;
 /// 分钟粒度：0, 5, 10 ... 55
@@ -303,7 +303,7 @@ pub fn render(view: &mut AppView, p: &Palette, cx: &mut Context<AppView>) -> Any
                             button("取消", BtnKind::Default, BtnSize::Small, false, p)
                                 .id("picker-cancel")
                                 .cursor_pointer()
-                                .on_click(cx.listener(|this, _, _, cx| {
+                                .on_click(click(cx, |this, _, _, cx| {
                                     this.overlay = Overlay::None;
                                     this.close_dropdown();
                                     cx.notify();
@@ -313,7 +313,7 @@ pub fn render(view: &mut AppView, p: &Palette, cx: &mut Context<AppView>) -> Any
                             button("添加", BtnKind::Primary, BtnSize::Small, conflict, p)
                                 .id("picker-confirm")
                                 .when(!conflict, |element| {
-                                    element.cursor_pointer().on_click(cx.listener(
+                                    element.cursor_pointer().on_click(click(cx, 
                                         |this, _, _, cx| {
                                             let value = to_config_value(
                                                 this.picker_hour,

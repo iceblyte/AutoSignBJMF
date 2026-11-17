@@ -2,7 +2,10 @@
 //!
 //! 每条规则后面都标了原型里的类名与尺寸，方便对照验收；改样式请先改原型。
 
+use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::{Disableable as _, Sizable as _};
 use gpui_kit::prelude::*;
+use gpui_kit::{App, ClickEvent, Context, ElementId, IntoElement, RenderOnce, Window};
 // 只取需要的类型：`use gpui_kit::*` 会把 gpui 的 `test` 宏一起带进来，
 // 导致本文件的 `#[test]` 解析成 gpui 的测试宏而递归展开。
 use gpui_kit::{div, px, rgb, AnyElement, Div, SharedString};
@@ -175,29 +178,122 @@ impl BtnSize {
     }
 }
 
-/// 按钮外观（不绑定事件，事件由调用方加）。
-pub fn button(text: impl Into<SharedString>, kind: BtnKind, size: BtnSize, disabled: bool, p: &Palette) -> Div {
-    let (bg, border, fg) = match kind {
-        BtnKind::Default => (p.surface, p.line_2, p.text),
-        BtnKind::Primary => (p.accent, p.accent, 0xffffff),
-        BtnKind::Ghost => (p.surface, p.surface, p.text_2),
-        BtnKind::Danger => (p.surface, p.line_2, p.bad),
-    };
-    div()
-        .h(px(size.height()))
-        .px(px(size.padding()))
-        .flex()
-        .items_center()
-        .justify_center()
-        .gap(px(6.0))
-        .rounded(px(size.radius()))
-        .bg(rgb(bg))
-        .border_1()
-        .border_color(rgb(border))
-        .text_size(px(size.font()))
-        .text_color(rgb(fg))
-        .when(disabled, |d| d.opacity(0.45))
-        .child(div().text_size(px(size.font())).text_color(rgb(fg)).child(text.into()))
+/// 把 `cx.listener(...)` 的写法适配成组件库的回调签名。
+///
+/// 库的 `Button::on_click` 要 `Fn(&ClickEvent, &mut Window, &mut App)`，
+/// 而我们全项目的写法都是 `cx.listener(|this, event, window, cx| ...)`。
+/// 有了这层，调用点只改一个函数名，语义完全不变。
+pub fn click<V: 'static>(
+    cx: &mut Context<V>,
+    handler: impl Fn(&mut V, &ClickEvent, &mut Window, &mut Context<V>) + 'static,
+) -> impl Fn(&ClickEvent, &mut Window, &mut App) + 'static {
+    let view = cx.entity();
+    move |event, window, app| {
+        view.update(app, |this, cx| handler(this, event, window, cx));
+    }
+}
+
+/// 按钮：渲染完全交给组件库的 [`Button`]，这里只做一层「构建器适配」。
+///
+/// 为什么需要这层薄壳（30 行）：
+/// - 库的 `Button` 是 `RenderOnce`，**没有** `Element` 实现，所以不能 `.id()` 之后再链
+///   `.on_click()`（`Stateful<Button>` 的 trait bound 不满足）；id 必须在构造时给；
+/// - 全项目 24 处调用点的写法是 `.id(x).cursor_pointer().on_click(...)`，
+///   其中 `on_click` 收的是 `cx.listener(...)` 风格的回调。
+/// 所以用 `Btn` 收下这些链式调用，`render` 时原样转交给 `Button`。
+/// 外观（变体/尺寸/hover/焦点环/禁用态）全部来自库，我们没有自己画一像素。
+#[derive(IntoElement)]
+pub struct Btn {
+    id: ElementId,
+    text: SharedString,
+    kind: BtnKind,
+    size: BtnSize,
+    disabled: bool,
+    children: Vec<AnyElement>,
+    on_click: Option<std::rc::Rc<dyn Fn(&ClickEvent, &mut Window, &mut App)>>,
+}
+
+impl Btn {
+    /// 覆盖元素 id（调用点都会显式给一个，便于点击态与测试定位）。
+    pub fn id(mut self, id: impl Into<ElementId>) -> Self {
+        self.id = id.into();
+        self
+    }
+
+    /// 库按钮自带 `cursor_pointer`，这里保留链式写法而已。
+    pub fn cursor_pointer(self) -> Self {
+        self
+    }
+
+    /// 追加子元素（例如带图标的「拾取」按钮）。
+    pub fn child(mut self, child: impl IntoElement) -> Self {
+        self.children.push(child.into_any_element());
+        self
+    }
+
+    /// 条件构建，与 gpui 的 `.when(...)` 语义一致。
+    pub fn when(mut self, condition: bool, build: impl FnOnce(Self) -> Self) -> Self {
+        if condition {
+            self = build(self);
+        }
+        self
+    }
+
+    pub fn on_click(
+        mut self,
+        handler: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+    ) -> Self {
+        self.on_click = Some(std::rc::Rc::new(handler));
+        self
+    }
+}
+
+impl RenderOnce for Btn {
+    fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
+        let mut button = Button::new(self.id).label(self.text);
+        button = match self.kind {
+            BtnKind::Default => button,
+            BtnKind::Primary => button.primary(),
+            BtnKind::Ghost => button.ghost(),
+            BtnKind::Danger => button.danger(),
+        };
+        button = match self.size {
+            BtnSize::Normal => button,
+            BtnSize::Small => button.small(),
+            BtnSize::Xs => button.xsmall(),
+        };
+        button = button.disabled(self.disabled);
+        for child in self.children {
+            button = button.child(child);
+        }
+        if let Some(handler) = self.on_click {
+            button = button.on_click(move |event, window, cx| handler(event, window, cx));
+        }
+        button
+    }
+}
+
+/// 造一个按钮。
+///
+/// 语气与尺寸映射到库的变体：Default→secondary、Primary、Ghost、Danger；
+/// Normal→medium、Small→small、Xs→xsmall。
+pub fn button(
+    text: impl Into<SharedString>,
+    kind: BtnKind,
+    size: BtnSize,
+    disabled: bool,
+    _p: &Palette,
+) -> Btn {
+    let text = text.into();
+    Btn {
+        id: ElementId::Name(SharedString::from(format!("btn:{text}"))),
+        text,
+        kind,
+        size,
+        disabled,
+        children: Vec::new(),
+        on_click: None,
+    }
 }
 
 /// 时间点胶囊 `.chip`：高 26，等宽 12px，右侧可带删。

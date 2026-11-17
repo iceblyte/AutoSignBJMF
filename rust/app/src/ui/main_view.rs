@@ -1553,7 +1553,7 @@ impl AppView {
                                 button("＋ 添加账号", BtnKind::Default, BtnSize::Xs, false, p)
                                     .id("add-account")
                                     .cursor_pointer()
-                                    .on_click(cx.listener(|this, _, window, cx| {
+                                    .on_click(click(cx, |this, _, window, cx| {
                                         this.start_qr_login(window, cx);
                                     })),
                             )
@@ -1663,7 +1663,7 @@ impl AppView {
                         )
                         .id("pause-all")
                         .cursor_pointer()
-                        .on_click(cx.listener(|this, _, _, cx| {
+                        .on_click(click(cx, |this, _, _, cx| {
                             let next = !this.state.paused;
                             this.runtime.set_paused(next);
                             this.state.paused = next;
@@ -1779,7 +1779,7 @@ impl AppView {
                     button("查看日志", BtnKind::Default, BtnSize::Small, false, p)
                         .id("view-log")
                         .cursor_pointer()
-                        .on_click(cx.listener(|this, _, _, cx| {
+                        .on_click(click(cx, |this, _, _, cx| {
                             let dir = this.state.data_dir().display().to_string();
                             let _ = open_url(&dir);
                             cx.notify();
@@ -1789,7 +1789,7 @@ impl AppView {
                     button("重新扫码", BtnKind::Primary, BtnSize::Small, false, p)
                         .id("relogin")
                         .cursor_pointer()
-                        .on_click(cx.listener(|this, _, window, cx| {
+                        .on_click(click(cx, |this, _, window, cx| {
                             this.start_qr_login(window, cx);
                         })),
                 )
@@ -1806,7 +1806,7 @@ impl AppView {
                     )
                         .id("toggle-pause")
                         .cursor_pointer()
-                        .on_click(cx.listener(|this, _, _, cx| {
+                        .on_click(click(cx, |this, _, _, cx| {
                             let index = this.state.selected;
                             let next = !this.runtime.account_paused(index);
                             this.runtime.set_account_paused(index, next);
@@ -1831,7 +1831,7 @@ impl AppView {
                     button("立即签到", BtnKind::Primary, BtnSize::Small, false, p)
                         .id("run-now")
                         .cursor_pointer()
-                        .on_click(cx.listener(|this, _, _, cx| {
+                        .on_click(click(cx, |this, _, _, cx| {
                             this.run_now();
                             cx.notify();
                         })),
@@ -1967,7 +1967,7 @@ impl AppView {
                                     .id("pick-location")
                                     .cursor_pointer()
                                     .child(pin)
-                                    .on_click(cx.listener(|this, _, _, cx| {
+                                    .on_click(click(cx, |this, _, _, cx| {
                                         // 拾取：打开高德坐标拾取页（与 Python 版一致）
                                         let _ = open_url("https://lbs.amap.com/tools/picker");
                                         this.state.log(LogKind::Info, "已打开坐标拾取页");
@@ -2317,7 +2317,7 @@ impl AppView {
                 button("删除账号", BtnKind::Danger, BtnSize::Small, false, p)
                     .id("delete-account")
                     .cursor_pointer()
-                    .on_click(cx.listener(|this, _, _, cx| {
+                    .on_click(click(cx, |this, _, _, cx| {
                         this.delete_selected();
                         cx.notify();
                     }))
@@ -2326,7 +2326,7 @@ impl AppView {
                 button("保存", BtnKind::Primary, BtnSize::Small, !self.state.dirty, p)
                     .id("save")
                     .cursor_pointer()
-                    .on_click(cx.listener(|this, _, _, cx| this.save(cx)))
+                    .on_click(click(cx, |this, _, _, cx| this.save(cx)))
                     .into_any_element()
             })
             .into_any_element()
@@ -2451,7 +2451,7 @@ impl AppView {
                                         button("扫码添加账号", BtnKind::Primary, BtnSize::Normal, false, p)
                                             .id("empty-scan")
                                             .cursor_pointer()
-                                            .on_click(cx.listener(|this, _, window, cx| {
+                                            .on_click(click(cx, |this, _, window, cx| {
                                                 this.start_qr_login(window, cx);
                                             })),
                                     )
@@ -2459,7 +2459,7 @@ impl AppView {
                                         button("导入配置文件", BtnKind::Default, BtnSize::Normal, false, p)
                                             .id("import-config")
                                             .cursor_pointer()
-                                            .on_click(cx.listener(|this, _, _, cx| {
+                                            .on_click(click(cx, |this, _, _, cx| {
                                                 this.import_config(cx);
                                                 cx.notify();
                                             })),
@@ -2768,7 +2768,7 @@ fn notify_block(
                         channel_field_label(field)
                     )))
                     .cursor_pointer()
-                    .on_click(cx.listener(move |this, _, window, cx| {
+                    .on_click(click(cx, move |this, _, window, cx| {
                         this.open_channel_editor(field, window, cx);
                     })),
             )
