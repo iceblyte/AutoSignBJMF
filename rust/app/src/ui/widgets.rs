@@ -53,40 +53,6 @@ pub fn pill(text: impl Into<SharedString>, fg: u32, bg: u32, border: u32, with_d
     }
 }
 
-/// 开关 `.sw`：34×20，选中时强调色，小圆点 16。
-/// 开关：开启是强调色轨道 + 白点内对勾，关闭是灰轨道 + 白点内叉。
-///
-/// 参考 ElegantClipboard 的开关形态 —— 带符号比纯色块更容易一眼看出当前状态，
-/// 对「不想点开设置页确认」的场景尤其明显。
-pub fn switch(checked: bool, disabled: bool, p: &Palette) -> Div {
-    let track = if checked { p.accent } else { p.line_2 };
-    let knob_left = if checked { 34.0 - 2.0 - 16.0 } else { 2.0 };
-    div()
-        .w(px(34.0))
-        .h(px(20.0))
-        .rounded_full()
-        .bg(rgb(track))
-        .relative()
-        .when(disabled, |d| d.opacity(0.45))
-        .child(
-            div()
-                .absolute()
-                .top(px(2.0))
-                .left(px(knob_left))
-                .w(px(16.0))
-                .h(px(16.0))
-                .rounded_full()
-                .bg(rgb(0xffffff))
-                .flex()
-                .items_center()
-                .justify_center()
-                .text_size(px(10.0))
-                .text_color(rgb(if checked { p.accent } else { p.text_3 }))
-                // 用 ✓ 与 ×：这两个字符在中文字体里都有，不会出现豆腐块
-                .child(if checked { "✓" } else { "×" }),
-        )
-}
-
 /// 选项块：下拉列表 / 时间选择器里的一个可选项。
 ///
 /// 选中态是强调色实底，未选中是 `surface-2` 描边，悬停提亮一档 ——
@@ -356,27 +322,6 @@ pub fn panel_header(title: impl Into<SharedString>, right: Option<AnyElement>, p
         row = row.child(element);
     }
     row
-}
-
-/// 输入框外框：32 高、8 圆角、1px 描边；聚焦时换强调色。
-pub fn input_frame(focused: bool, readonly: bool, invalid: bool, p: &Palette) -> Div {
-    let bg = if readonly { p.surface_2 } else { p.surface };
-    let border = if invalid {
-        p.bad
-    } else if focused {
-        p.accent
-    } else {
-        p.line_2
-    };
-    div()
-        .h(px(32.0))
-        .px(px(10.0))
-        .flex()
-        .items_center()
-        .rounded(px(8.0))
-        .bg(rgb(bg))
-        .border_1()
-        .border_color(rgb(border))
 }
 
 /// 头像方块 `.ava`：26×26、7 圆角。

@@ -19,6 +19,7 @@ use gpui_kit::base::StyledExt;
 
 use gpui_kit::component::scroll::ScrollableElement;
 use gpui_kit::assets::IconNamed;
+use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::select::{Select, SelectEvent, SelectState};
 use gpui_kit::component::Sizable as _;
 use gpui_kit::component::IndexPath;
@@ -29,41 +30,18 @@ use crate::state::{mask_key, AccountStatus, AppState, LogKind, PillTone};
 use crate::theme::*;
 use crate::ui::widgets::*;
 
-/// 可编辑字段。
+/// 需要读写草稿的字段。
+///
+/// 重试次数/间隔/执行时间已经不是「输入框」了（改成了下拉与时间选择器），
+/// 所以这里只剩四个真正靠文本编辑的字段。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Field {
     Lat,
     Lng,
     Wx,
     Qq,
-    RetryAttempts,
-    RetryDelay,
-    AddTime,
 }
 
-impl Field {
-    fn index(self) -> usize {
-        match self {
-            Field::Lat => 0,
-            Field::Lng => 1,
-            Field::Wx => 2,
-            Field::Qq => 3,
-            Field::RetryAttempts => 4,
-            Field::RetryDelay => 5,
-            Field::AddTime => 6,
-        }
-    }
-
-    pub const ALL: [Field; 7] = [
-        Field::Lat,
-        Field::Lng,
-        Field::Wx,
-        Field::Qq,
-        Field::RetryAttempts,
-        Field::RetryDelay,
-        Field::AddTime,
-    ];
-}
 
 /// 打开的面板 / 弹窗。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -92,7 +70,6 @@ pub struct AppView {
     pub runtime: std::sync::Arc<crate::runtime::Runtime>,
     pub dark: bool,
     pub overlay: Overlay,
-    pub active: Option<Field>,
     /// 「＋ 添加」正在输入的时间点
     pub add_time: String,
     /// 保存失败时的提示
@@ -123,9 +100,13 @@ pub struct AppView {
     pub main_hidden: bool,
     /// 拖动窗口中的偏移（光标相对窗口左上角），`None` 表示没在拖。
     pub window_drag: Option<(f32, f32)>,
-    /// 输入框里的光标位置（字符下标，不是字节）：
-    /// 左右键/Home/End 要能动，撤回删错也要删在光标前面。
-    pub caret: usize,
+    /// 纬度 / 经度 / 微信 Key / QQ Key：交给组件库的 Input 管编辑与光标
+    pub lat_input: Entity<InputState>,
+    pub lng_input: Entity<InputState>,
+    pub wx_input: Entity<InputState>,
+    pub qq_input: Entity<InputState>,
+    /// 上一次同步到输入框的草稿版本号
+    inputs_synced: Option<u64>,
     /// 日志区的滚动位置（日志多了要能翻）
     pub log_scroll: ScrollHandle,
     /// 上一次渲染时看到的日志版本号：变了就把日志区贴底。
@@ -140,7 +121,6 @@ pub struct AppView {
     pub titlebar_dark: Option<bool>,
     /// 已经设过标题栏配色的窗口（主窗口自绘，设置窗口是系统标题栏）
     pub titled_windows: std::collections::HashSet<WindowId>,
-    focus: Vec<FocusHandle>,
     /// 关窗提示勾了「不再提示」
     pub close_hint_muted: bool,
     /// 用户点了关闭按钮（由窗口回调置位，界面下一帧消费）
@@ -182,9 +162,6 @@ impl AppView {
     ) -> Self {
         // 用上次存下来的主题启动（缺字段/旧配置 → 跟随系统）
         let dark = state.theme.is_dark(system_is_dark());
-        let focus = (0..Field::ALL.len())
-            .map(|_| cx.focus_handle())
-            .collect::<Vec<_>>();
         // 时间选择器的初始值跟着现有时间走，打开就能少点几下
         let (picker_hour, picker_minute) =
             crate::ui::time_picker::default_pick(&state.settings.times);
@@ -435,12 +412,73 @@ impl AppView {
         })
         .detach();
 
+        // ---- 文本输入：组件库的 Input + InputState ----
+        // 编辑、光标、选区、粘贴、中文输入法都由库负责，我们只管「值变了写回草稿」。
+        let draft = state.draft.clone();
+        let lat_input = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder("39.908720")
+                .default_value(draft.lat.clone())
+        });
+        let lng_input = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder("116.397450")
+                .default_value(draft.lng.clone())
+        });
+        let wx_input = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder("SCT 开头的 SendKey")
+                .default_value(draft.wx_key.clone())
+        });
+        let qq_input = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder("Qmsg 酱的 Key")
+                .default_value(draft.qq_key.clone())
+        });
+
+        cx.subscribe_in(&lat_input, window, |this, _, event, _, cx| {
+            if matches!(event, InputEvent::Change) {
+                let text = this.lat_input.read(cx).value().to_string();
+                this.state.edit(|draft| draft.lat = text);
+                cx.notify();
+            }
+        })
+        .detach();
+        cx.subscribe_in(&lng_input, window, |this, _, event, _, cx| {
+            if matches!(event, InputEvent::Change) {
+                let text = this.lng_input.read(cx).value().to_string();
+                this.state.edit(|draft| draft.lng = text);
+                cx.notify();
+            }
+        })
+        .detach();
+        cx.subscribe_in(&wx_input, window, |this, _, event, _, cx| {
+            if matches!(event, InputEvent::Change) {
+                let text = this.wx_input.read(cx).value().to_string();
+                this.state.edit(|draft| draft.wx_key = text);
+                cx.notify();
+            }
+        })
+        .detach();
+        cx.subscribe_in(&qq_input, window, |this, _, event, _, cx| {
+            if matches!(event, InputEvent::Change) {
+                let text = this.qq_input.read(cx).value().to_string();
+                this.state.edit(|draft| draft.qq_key = text);
+                cx.notify();
+            }
+        })
+        .detach();
+
         let mut view = Self {
             state,
             runtime,
             dark,
             overlay,
-            active: None,
+            lat_input,
+            lng_input,
+            wx_input,
+            qq_input,
+            inputs_synced: None,
             add_time: String::new(),
             error: None,
             settings_tab: SettingsTab::General,
@@ -458,7 +496,6 @@ impl AppView {
             main_window_id: Some(main_window_id),
             main_hidden: false,
             window_drag: None,
-            caret: 0,
             log_scroll: ScrollHandle::new(),
             log_revision_seen: None,
             tick_count: 0,
@@ -466,7 +503,6 @@ impl AppView {
             kit_dark: None,
             titlebar_dark: None,
             titled_windows: Default::default(),
-            focus,
             close_hint_muted: false,
             close_signal: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         };
@@ -777,151 +813,8 @@ impl AppView {
         }
     }
 
-    fn value_of(&self, field: Field) -> String {
-        let draft = &self.state.draft;
-        match field {
-            Field::Lat => draft.lat.clone(),
-            Field::Lng => draft.lng.clone(),
-            Field::Wx => draft.wx_key.clone(),
-            Field::Qq => draft.qq_key.clone(),
-            Field::RetryAttempts => draft.retry_attempts.clone(),
-            Field::RetryDelay => draft.retry_delay.clone(),
-            Field::AddTime => self.add_time.clone(),
-        }
-    }
 
-    fn set_value(&mut self, field: Field, value: String) {
-        match field {
-            Field::AddTime => {
-                self.add_time = value;
-                return;
-            }
-            _ => {}
-        }
-        self.state.edit(|draft| match field {
-            Field::Lat => draft.lat = value,
-            Field::Lng => draft.lng = value,
-            Field::Wx => draft.wx_key = value,
-            Field::Qq => draft.qq_key = value,
-            Field::RetryAttempts => draft.retry_attempts = value,
-            Field::RetryDelay => draft.retry_delay = value,
-            Field::AddTime => {}
-        });
-    }
 
-    /// 键盘输入。所有编辑都作用在「光标处」，不是一律追加到末尾 ——
-    /// 之前左右键根本没有反应，插入/删除也只认末尾，改个中间的数字只能全删重打。
-    fn on_key(&mut self, field: Field, event: &KeyDownEvent, cx: &mut Context<Self>) {
-        let key = event.keystroke.key.as_str();
-        let mut chars: Vec<char> = self.value_of(field).chars().collect();
-        let mut caret = self.caret.min(chars.len());
-
-        // Ctrl+V 粘贴：gpui 只给按键，剪贴板要自己读
-        if event.keystroke.modifiers.control {
-            match key {
-                "v" => {
-                    if let Some(text) = crate::system::win::clipboard_text() {
-                        // 单行输入框：换行与制表符直接去掉
-                        let cleaned: Vec<char> = text
-                            .chars()
-                            .filter(|c| *c != '\r' && *c != '\n' && *c != '\t')
-                            .collect();
-                        let added = cleaned.len();
-                        for (offset, ch) in cleaned.into_iter().enumerate() {
-                            chars.insert(caret + offset, ch);
-                        }
-                        caret += added;
-                        self.caret = caret;
-                        self.set_value(field, chars.into_iter().collect());
-                    }
-                    cx.notify();
-                    return;
-                }
-                "a" => {
-                    // 全选后再输入即替换：这里退化成清空，符合单行输入框的直觉
-                    self.caret = 0;
-                    self.set_value(field, String::new());
-                    cx.notify();
-                    return;
-                }
-                "c" | "x" => {
-                    // 没有选区概念，「复制/剪切全部」最接近的语义是整段复制
-                    let _ = crate::ui::main_view::copy_to_clipboard(&chars.iter().collect::<String>());
-                    if key == "x" {
-                        chars.clear();
-                        caret = 0;
-                        self.caret = 0;
-                        self.set_value(field, String::new());
-                    }
-                    cx.notify();
-                    return;
-                }
-                _ => {}
-            }
-        }
-
-        match key {
-            "backspace" => {
-                if caret > 0 {
-                    chars.remove(caret - 1);
-                    caret -= 1;
-                }
-            }
-            "delete" => {
-                if caret < chars.len() {
-                    chars.remove(caret);
-                }
-            }
-            "left" => caret = caret.saturating_sub(1),
-            "right" => caret = (caret + 1).min(chars.len()),
-            "home" => caret = 0,
-            "end" => caret = chars.len(),
-            "escape" => {
-                self.active = None;
-                self.caret = 0;
-                cx.notify();
-                return;
-            }
-            "enter" => {
-                if field == Field::AddTime {
-                    let raw = self.add_time.clone();
-                    if !raw.trim().is_empty() {
-                        match self.state.add_time(&raw) {
-                            Ok(()) => {
-                                self.add_time.clear();
-                                self.caret = 0;
-                                self.error = None;
-                            }
-                            Err(error) => self.error = Some(error.0),
-                        }
-                    }
-                }
-                cx.notify();
-                return;
-            }
-            "space" => {
-                chars.insert(caret, ' ');
-                caret += 1;
-            }
-            "tab" => {}
-            _ => {
-                if let Some(text) = event.keystroke.key_char.as_ref() {
-                    // 只接受可打印字符；中文输入法在本工具里没有场景（全是坐标/数字/Key）
-                    if !text.is_empty() && !text.chars().any(|c| c.is_control()) {
-                        let added: Vec<char> = text.chars().collect();
-                        let count = added.len();
-                        for (offset, ch) in added.into_iter().enumerate() {
-                            chars.insert(caret + offset, ch);
-                        }
-                        caret += count;
-                    }
-                }
-            }
-        }
-        self.caret = caret;
-        self.set_value(field, chars.into_iter().collect());
-        cx.notify();
-    }
 
     /// 扫码添加：真的去拉一张二维码（后台线程），成功后插入账号。
     fn start_qr_login(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
@@ -1063,6 +956,26 @@ impl AppView {
     /// 之前是从设置页里直接改 `dark` 再 `sync_kit_theme`，而 `Theme::change`
     /// 会刷新所有窗口 —— 一旦某个窗口被顺带显示/顶到别的窗口后面，
     /// 用户看到的就是「设置页没了、主窗口冒出来」。
+    /// 把草稿里的值推回四个输入框。
+    ///
+    /// 只在「草稿被外部重灌」时调用（切账号 / 保存 / 取消编辑）——
+    /// 用户打字时不回推，否则会打断库输入框里正在移动的光标。
+    pub fn sync_inputs(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let draft = self.state.draft.clone();
+        self.lat_input.update(cx, |state, cx| {
+            state.set_value(draft.lat.clone(), window, cx);
+        });
+        self.lng_input.update(cx, |state, cx| {
+            state.set_value(draft.lng.clone(), window, cx);
+        });
+        self.wx_input.update(cx, |state, cx| {
+            state.set_value(draft.wx_key.clone(), window, cx);
+        });
+        self.qq_input.update(cx, |state, cx| {
+            state.set_value(draft.qq_key.clone(), window, cx);
+        });
+    }
+
     /// 同步「添加执行时间」的当前值：改字段，同时把两个下拉的选中项摆正。
     ///
     /// 组件库的 Select 自己保存选中项，所以改 picker_hour/minute 时必须一起改，
@@ -1131,7 +1044,6 @@ impl AppView {
                 self.state.reload_draft();
             }
             self.overlay = Overlay::None;
-            self.active = None;
             cx.notify();
             return;
         }
@@ -1215,10 +1127,10 @@ impl AppView {
 
     /// 「编辑」：弹窗里改该渠道的密钥（草稿先按磁盘内容重灌一次）。
     fn open_channel_editor(&mut self, field: Field, window: &mut Window, cx: &mut Context<Self>) {
+        // 草稿按磁盘内容重灌（版本号 +1），下一帧会把值推回输入框
         self.state.reload_draft();
         self.overlay = Overlay::ChannelEdit(field);
-        self.active = Some(field);
-        window.focus(&self.focus[field.index()], cx);
+        self.sync_inputs(window, cx);
         cx.notify();
     }
 
@@ -1226,6 +1138,7 @@ impl AppView {
     pub fn save_channel_key(&mut self, field: Field, cx: &mut Context<Self>) {
         let index = self.state.selected;
         let key = self.channel_key(field).trim().to_string();
+        crate::ui_debug(&format!("save_channel_key len={}", key.len()));
         if let Some(student) = self.state.config.students.get_mut(index) {
             match field {
                 Field::Qq => student.qmsg_key = key.clone(),
@@ -1250,7 +1163,6 @@ impl AppView {
                 .log(LogKind::Bad, format!("保存{name}密钥失败：{error}")),
         }
         self.overlay = Overlay::None;
-        self.active = None;
         cx.notify();
     }
 
@@ -1258,7 +1170,6 @@ impl AppView {
     pub fn cancel_channel_edit(&mut self, cx: &mut Context<Self>) {
         self.state.reload_draft();
         self.overlay = Overlay::None;
-        self.active = None;
         cx.notify();
     }
 
@@ -1940,8 +1851,8 @@ impl AppView {
             hint = hint;
         }
 
-        let lat = self.text_field(Field::Lat, true, readonly, p, cx);
-        let lng = self.text_field(Field::Lng, true, readonly, p, cx);
+        let lat = self.text_field(Field::Lat, readonly, cx);
+        let lng = self.text_field(Field::Lng, readonly, cx);
         // 通知渠道：开关只决定「发不发」，输入框不再直接铺在这里。
         // 关掉时整块收起来，打开时在右侧给「编辑 / 查看」两个入口，各自弹窗操作。
         let (wx_on, qq_on) = self
@@ -2516,111 +2427,23 @@ impl AppView {
             .into_any_element()
     }
 
-    /// 一个文本输入框：外框 + 文本 + 聚焦时的光标。
+    /// 一个文本输入框：直接用组件库的 Input。
+    ///
+    /// 光标、选区、左右键、Home/End、退格、粘贴、中文输入法全部由库处理；
+    /// 我们只在 `InputEvent::Change` 里把文本写回草稿。
     pub(crate) fn text_field(
         &self,
         field: Field,
-        mono: bool,
         readonly: bool,
-        p: &Palette,
-        cx: &mut Context<Self>,
+        _cx: &mut Context<Self>,
     ) -> AnyElement {
-        let focused = self.active == Some(field);
-        let value = self.value_of(field);
-        let placeholder = match field {
-            Field::Lat => "39.908720",
-            Field::Lng => "116.397450",
-            Field::Wx => "未配置",
-            Field::Qq => "未配置",
-            Field::RetryAttempts => "3",
-            Field::RetryDelay => "5",
-            Field::AddTime => "21:31",
+        let state = match field {
+            Field::Lat => self.lat_input.clone(),
+            Field::Lng => self.lng_input.clone(),
+            Field::Qq => self.qq_input.clone(),
+            _ => self.wx_input.clone(),
         };
-        let empty = value.trim().is_empty();
-        let index = field.index();
-        let handle = self.focus[index].clone();
-        let raw = if mono {
-            format!("{value}")
-        } else {
-            value.clone()
-        };
-
-        let text_color = if empty { p.text_3 } else { p.text };
-        let size = if mono { 12.5 } else { 13.0 };
-
-        // 光标画在真正的位置上：把文本按光标切成「前半段 + 竖线 + 后半段」。
-        // 之前竖线永远钉在末尾，按左右键文本没变、竖线也不动，看着像没反应。
-        let chars: Vec<char> = raw.chars().collect();
-        let caret = if focused && !readonly {
-            self.caret.min(chars.len())
-        } else {
-            chars.len()
-        };
-        let (head, tail) = if empty {
-            (String::new(), placeholder.to_string())
-        } else {
-            (
-                chars[..caret].iter().collect::<String>(),
-                chars[caret..].iter().collect::<String>(),
-            )
-        };
-
-        let mut element = div()
-            .id(("field", index))
-            .flex()
-            .items_center()
-            .w_full()
-            .min_w_0();
-
-        let span = |text: String, color: u32| {
-            div()
-                .text_size(px(size))
-                .text_color(rgb(color))
-                .child(text)
-        };
-
-        let mut frame = input_frame(focused, readonly, false, p)
-            .w_full()
-            .flex()
-            .items_center()
-            .gap(px(1.0))
-            .child(span(head, text_color));
-        if focused && !readonly {
-            // 空值时光标要有地方站：给一个最小宽度，不然会贴在边框上
-            frame = frame.child(
-                div()
-                    .flex_none()
-                    .w(px(1.0))
-                    .h(px(14.0))
-                    .bg(rgb(p.accent)),
-            );
-        }
-        frame = frame.child(span(tail, text_color));
-        element = element.child(frame);
-
-        if readonly {
-            return element.into_any_element();
-        }
-
-        element
-            .track_focus(&handle)
-            .cursor_text()
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(move |this, _, window, cx| {
-                    this.active = Some(field);
-                    this.caret = this.value_of(field).chars().count();
-                    window.focus(&this.focus[index], cx);
-                    // 别让事件冒到根节点：根节点的 mouse_down 负责「点到别处就收光标」，
-                    // 不拦住的话刚点进来就被收掉了（表现是输入框永远聚焦不上）。
-                    cx.stop_propagation();
-                    cx.notify();
-                }),
-            )
-            .on_key_down(cx.listener(move |this, event: &KeyDownEvent, _, cx| {
-                this.on_key(field, event, cx);
-            }))
-            .into_any_element()
+        Input::new(&state).disabled(readonly).into_any_element()
     }
 }
 
@@ -2756,7 +2579,6 @@ fn notify_block(
                         if open == field {
                             this.state.reload_draft();
                             this.overlay = Overlay::None;
-                            this.active = None;
                         }
                     }
                 }
@@ -2911,6 +2733,13 @@ impl Render for AppView {
             return crate::ui::settings::render(self, p, cx);
         }
 
+        // 草稿被外部重灌（切账号 / 保存 / 取消编辑）时，把值推回输入框。
+        // 用版本号而不是每次渲染都推：后者会在用户打字时把光标打回末尾。
+        if self.inputs_synced != Some(self.state.draft_revision) {
+            self.inputs_synced = Some(self.state.draft_revision);
+            self.sync_inputs(window, cx);
+        }
+
         // 日志贴底：只在**渲染这一帧**把请求交给 ScrollHandle，
         // 它才会在紧接着的 prepaint 里用「含新行」的内容高度算偏移。
         // 在 tick / 点击回调里提前调的话，会被「还没包含新行」的那一帧先消费掉，
@@ -2976,14 +2805,10 @@ impl Render for AppView {
 
         root = root.on_mouse_down(
             MouseButton::Left,
-            cx.listener(|this, event: &gpui_kit::MouseDownEvent, _, cx| {
-                this.click_probe = this.click_probe.saturating_add(1);
+            cx.listener(|this, event: &gpui_kit::MouseDownEvent, _, _| {
+                // 只作为诊断计数保留：输入框的失焦由组件库的 Input 自己处理
                 let _ = event;
-                // 点到别处就收起输入框光标（输入框自己会 stop_propagation，不会走到这里）
-                if this.active.is_some() {
-                    this.active = None;
-                    cx.notify();
-                }
+                this.click_probe = this.click_probe.saturating_add(1);
             }),
         );
 
@@ -2991,5 +2816,3 @@ impl Render for AppView {
     }
 }
 
-impl AppView {
-}

@@ -74,7 +74,7 @@ pub fn render(view: &mut AppView, p: &Palette, cx: &mut Context<AppView>) -> Any
         .flex_col()
         .gap(px(8.0))
         .child(div().text_size(px(11.0)).text_color(rgb(p.text_3)).child(hint))
-        .child(view.text_field(field, true, false, p, cx))
+        .child(view.text_field(field, false, cx))
         .child(
             div()
                 .text_size(px(10.5))

@@ -238,6 +238,9 @@ pub struct AppState {
     pub log_revision: u64,
     pub draft: Draft,
     pub dirty: bool,
+    /// 草稿版本号：每次 `reload_draft` 加一。界面靠它把草稿推回组件库的输入框
+    /// （用户输入只走 draft → 状态，不回推，避免打断正在打字的光标）。
+    pub draft_revision: u64,
     pub theme: ThemeMode,
     /// 最近一轮里失败的账号下标。
     failed: BTreeSet<usize>,
@@ -279,6 +282,7 @@ impl AppState {
             log_revision: 0,
             draft,
             dirty: false,
+            draft_revision: 0,
             theme,
             failed: BTreeSet::new(),
             needs_login: BTreeSet::new(),
@@ -351,6 +355,7 @@ impl AppState {
             },
         };
         self.dirty = false;
+        self.draft_revision = self.draft_revision.wrapping_add(1);
     }
 
     /// 改草稿里的任意字段。

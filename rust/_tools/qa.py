@@ -74,10 +74,31 @@ def client_origin(hwnd):
 
 
 def bring_front(hwnd):
+    """把窗口弄到前台并真正**激活**。
+
+    只用 SetForegroundWindow 经常静默失败（Windows 的前台锁），而「窗口未激活」
+    时第一下点击会被系统拿去激活窗口，事件到不了控件 —— 表现出来就是
+    「点了输入框没反应、点了按钮没效果」。这里用 AttachThreadInput 抢一次。
+    """
     if u.IsIconic(hwnd):
         u.ShowWindow(hwnd, SW_RESTORE)
+    if u.GetForegroundWindow() == hwnd:
+        time.sleep(0.05)
+        return
     u.SetForegroundWindow(hwnd)
-    time.sleep(0.15)
+    if u.GetForegroundWindow() != hwnd:
+        # 经典办法：把当前前台线程的输入队列挂到目标线程上再设置
+        fg = u.GetForegroundWindow()
+        target = u.GetWindowThreadProcessId(hwnd, None)
+        current = u.GetWindowThreadProcessId(fg, None) if fg else 0
+        if current and target and current != target:
+            u.AttachThreadInput(current, target, True)
+            u.SetForegroundWindow(hwnd)
+            u.SetForegroundWindow(hwnd)
+            u.AttachThreadInput(current, target, False)
+        else:
+            u.SetForegroundWindow(hwnd)
+    time.sleep(0.2)
 
 
 def click_at(sx, sy, double=False):
