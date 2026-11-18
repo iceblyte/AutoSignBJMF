@@ -20,6 +20,57 @@ fn wide(text: &str) -> Vec<u16> {
     text.encode_utf16().chain(std::iter::once(0)).collect()
 }
 
+/// 进入后台态：把工作集还给系统 + 把内存优先级降到最低。
+///
+/// 这是一个托盘常驻应用，隐藏后用户看不到任何东西，没必要占着几十 MB 常驻内存：
+/// - `SetProcessWorkingSetSizeEx(.., -1, -1, 0)`：把工作集页标记为空闲，
+///   随时可被回收/换出（commit 不变，再打开时按需缺页回来，代价是首帧略慢）；
+/// - `SetProcessInformation(ProcessMemoryPriority, LOWEST)`：让系统在内存紧张时
+///   优先把我们换出去，而不是等系统自己去压。
+///
+/// 两者都不影响正确性，只是「闲置时把资源让给别人」。
+pub fn enter_background() {
+    use windows_sys::Win32::System::Memory::SetProcessWorkingSetSizeEx;
+    use windows_sys::Win32::System::Threading::{
+        GetCurrentProcess, SetProcessInformation, MEMORY_PRIORITY_INFORMATION,
+        MEMORY_PRIORITY_VERY_LOW, ProcessMemoryPriority,
+    };
+    unsafe {
+        let process = GetCurrentProcess();
+        let info = MEMORY_PRIORITY_INFORMATION {
+            MemoryPriority: MEMORY_PRIORITY_VERY_LOW,
+        };
+        SetProcessInformation(
+            process,
+            ProcessMemoryPriority,
+            &info as *const _ as *const c_void,
+            std::mem::size_of::<MEMORY_PRIORITY_INFORMATION>() as u32,
+        );
+        // -1 / -1 表示「按系统建议值」，等价于 EmptyWorkingSet
+        let trimmed = SetProcessWorkingSetSizeEx(process, usize::MAX, usize::MAX, 0);
+        crate::ui_debug(&format!("enter_background: trim={trimmed}"));
+    }
+}
+
+/// 回到前台态：内存优先级恢复默认（工作集会被缺页慢慢填回来，不用管）。
+pub fn leave_background() {
+    use windows_sys::Win32::System::Threading::{
+        GetCurrentProcess, SetProcessInformation, MEMORY_PRIORITY_INFORMATION,
+        MEMORY_PRIORITY_NORMAL, ProcessMemoryPriority,
+    };
+    unsafe {
+        let info = MEMORY_PRIORITY_INFORMATION {
+            MemoryPriority: MEMORY_PRIORITY_NORMAL,
+        };
+        SetProcessInformation(
+            GetCurrentProcess(),
+            ProcessMemoryPriority,
+            &info as *const _ as *const c_void,
+            std::mem::size_of::<MEMORY_PRIORITY_INFORMATION>() as u32,
+        );
+    }
+}
+
 /// 把窗口抢到前台。
 ///
 /// `SetForegroundWindow` 有个系统限制：调用方进程不是当前前台进程时，
@@ -239,7 +290,7 @@ pub fn window_hwnd_of(window: &gpui_kit::Window) -> Option<*mut c_void> {
 
 /// 隐藏指定窗口（主窗口「最小化到托盘」用）。
 pub fn hide_window(window: &gpui_kit::Window) -> bool {
-    hide_window_with(window, false)
+    hide_window_with(window, false, false)
 }
 
 /// 隐藏主窗口，并把它记进唤醒缓存。
@@ -247,10 +298,11 @@ pub fn hide_window(window: &gpui_kit::Window) -> bool {
 /// 只有主窗口能写缓存 —— 设置窗口也走 hide 的话，缓存会被它覆盖，
 /// 之后托盘「打开主窗口」就会把设置窗口叫出来。
 pub fn hide_main_window_of(window: &gpui_kit::Window) -> bool {
-    hide_window_with(window, true)
+    // 主窗口藏起来 = 程序进入后台常驻：顺手把内存让出去
+    hide_window_with(window, true, true)
 }
 
-fn hide_window_with(window: &gpui_kit::Window, remember: bool) -> bool {
+fn hide_window_with(window: &gpui_kit::Window, remember: bool, background: bool) -> bool {
     let Some(hwnd) = window_hwnd_of(window) else {
         return false;
     };
@@ -260,11 +312,16 @@ fn hide_window_with(window: &gpui_kit::Window, remember: bool) -> bool {
             *guard = Some(hwnd as isize);
         }
     }
-    unsafe { ShowWindow(hwnd, SW_HIDE) != 0 }
+    let ok = unsafe { ShowWindow(hwnd, SW_HIDE) != 0 };
+    if background {
+        enter_background();
+    }
+    ok
 }
 
 /// 把指定窗口显示出来，最小化的先还原。
 pub fn show_window(window: &gpui_kit::Window) -> bool {
+    leave_background();
     let Some(hwnd) = window_hwnd_of(window) else {
         return false;
     };
@@ -382,13 +439,19 @@ pub fn main_window() -> Option<*mut c_void> {
 /// 隐藏主窗口（等价于「最小化到托盘」）。
 pub fn hide_main_window() -> bool {
     match main_window() {
-        Some(hwnd) => unsafe { ShowWindow(hwnd, SW_HIDE) != 0 },
+        Some(hwnd) => unsafe {
+            let ok = ShowWindow(hwnd, SW_HIDE) != 0;
+            // 藏起来之后立刻把内存让出去
+            enter_background();
+            ok
+        },
         None => false,
     }
 }
 
 /// 重新显示并把窗口提到前台；最大化状态会被保留。
 pub fn show_main_window() -> bool {
+    leave_background();
     match main_window() {
         Some(hwnd) => unsafe {
             let maximized = IsZoomed(hwnd) != 0;

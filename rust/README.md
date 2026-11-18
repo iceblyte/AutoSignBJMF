@@ -53,13 +53,24 @@ CI 上的做法是装 Windows SDK（`choco install windows-sdk-10.0` 或 msbuild
 | 指标 | 结果 |
 |---|---|
 | 进程数 | **1** |
-| 开窗内存 | Working Set **54.5 MB** / Private **100 MB** |
-| 隐藏窗口后（等价关窗到托盘） | Working Set **54.5 MB**（不回落，也不再增长） |
+| 开窗内存 | 私有工作集 **12.7 MB**（任务管理器「内存」列）/ 总工作集 51.4 MB / 提交 83.9 MB |
+| 隐藏到托盘后 | 私有工作集 **1.9 MB** / 总工作集 5.1 MB（`EmptyWorkingSet` + 内存优先级降到最低） |
+| 隐藏后 CPU | **0.08 s / 30 s**（约 0.3% 单核；隐藏时不再每秒重绘） |
 | 启动到窗口可见 | **486 ms**（3 次中位数） |
 | release 体积 | **10.27 MB**（`lto=true, codegen-units=1, opt-level=s, strip`） |
 | release 构建耗时 | **8 分 22 秒**（全量）；关 LTO 为 3 分 48 秒 / 34.5 MB |
 | debug 构建耗时 | 首次全量约 25 秒（增量 5~10 秒） |
 | 运行时依赖 | **全部是系统 DLL**（kernel32/d3d11/dwrite/dcomp/icuuc…），无 VC++ 运行库、无 MinGW 动态库，单文件即可分发 |
+
+> 口径说明：Windows 上「占多大内存」看两个数——任务管理器的「内存」列是**私有工作集**，
+> 资源监视器的「提交」是进程提交量。托盘常驻应用真正影响别人的是前者；提交量主要是
+> D3D11 设备 + 字形图集（窗口存在期间不释放）。
+>
+> 隐藏到托盘时会做两件事（`system/win.rs::enter_background`）：
+> `SetProcessWorkingSetSizeEx(-1,-1)` 把工作集页标记为空闲 + `SetProcessInformation`
+> 把进程内存优先级降到 `MEMORY_PRIORITY_VERY_LOW`，让系统在内存紧张时优先换出我们。
+> 再显示时恢复优先级（`leave_background`），页按需缺页回来，首帧会略慢。
+> 另外 `tick` 在隐藏时不再 `notify()`，避免每秒重排一帧（重绘会带着文本排版缓存长）。
 
 对照 Tauri 方案（你们之前的 spike）：开窗 401 MB / 8 进程、关窗残留 188 MB、安装包 3.2 MB。
 

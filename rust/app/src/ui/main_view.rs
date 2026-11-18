@@ -178,9 +178,14 @@ impl AppView {
                 _ => Some(crate::system::tray::TrayCommand::RunNow),
             };
             if let Some(command) = command {
+                // 延时可调：验证「隐藏 → 再唤起」时需要在触发前先手动藏起来
+                let delay = std::env::var("AUTOSIGN_TEST_TRAY_DELAY_MS")
+                    .ok()
+                    .and_then(|value| value.parse::<u64>().ok())
+                    .unwrap_or(3000);
                 cx.spawn(async move |this, cx| {
                     cx.background_executor()
-                        .timer(std::time::Duration::from_secs(3))
+                        .timer(std::time::Duration::from_millis(delay))
                         .await;
                     let _ = this.update(cx, |view, cx| {
                         let sent = view.runtime.send_tray_command(command);
@@ -657,7 +662,11 @@ impl AppView {
                     .await;
                 match this.update(cx, |view, cx| {
                     view.tick(cx);
-                    cx.notify();
+                    // 窗口藏在托盘里时没人看，不用每秒重绘一帧。
+                    // （重绘会带着文本排版缓存、字形图集一起长，后台常驻没必要）
+                    if !view.main_hidden {
+                        cx.notify();
+                    }
                 }) {
                     Ok(()) => {}
                     Err(error) => {
@@ -938,6 +947,10 @@ impl AppView {
         }
         // 只隐藏，不销毁：销毁共用同一 entity 的窗口会把整个 app 的消息循环卡死。
         crate::system::win::hide_window(window);
+        // 两个窗口都藏起来 = 完全在后台，这时候再让内存
+        if self.main_hidden {
+            crate::system::win::enter_background();
+        }
         // 隐藏后把前台交还主窗口：否则 gpui 可能仍把激活留在被隐藏的设置窗口上，
         // 主窗口看起来"点不动"（事件进不来）。
         // 但主窗口若本来就在托盘里藏着，就别把它叫出来。
