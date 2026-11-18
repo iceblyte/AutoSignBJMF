@@ -4,15 +4,18 @@
 
 use std::sync::{Arc, Mutex};
 
-use gpui_kit::base::StyledExt;
+use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::{Sizable as _, WindowExt as _};
 use gpui_kit::prelude::*;
-use gpui_kit::{div, img, px, rgba, rgb, AnyElement, Context, SharedString};
+use gpui_kit::{div, img, px, rgb, Context, SharedString, WeakEntity, Window};
 
 use bjmf_core::QrLogin;
 
 use crate::state::{Draft, LogKind};
 use crate::theme::*;
-use crate::ui::main_view::{AppView, Overlay};
+use crate::theme::{DARK, LIGHT, Palette};
+use crate::ui::main_view::AppView;
+use crate::ui::widgets::dot;
 use crate::ui::widgets::*;
 
 /// 扫码阶段。
@@ -158,7 +161,6 @@ pub fn poll(view: &mut AppView) -> bool {
                     let _ = (name, class, cookie, student);
                 }
             }
-            view.overlay = Overlay::None;
             view.qr = None;
             view.qr_image = None;
             false
@@ -173,206 +175,163 @@ pub fn poll(view: &mut AppView) -> bool {
     }
 }
 
-/// 渲染模态。
-pub fn render(view: &mut AppView, p: &Palette, cx: &mut Context<AppView>) -> AnyElement {
-    let waiting = view.qr_error.is_none();
-    let status_text = if let Some(error) = &view.qr_error {
-        error.clone()
-    } else if view.qr_image.is_some() {
-        "等待扫码…".to_string()
-    } else {
-        "正在获取二维码…".to_string()
-    };
-    let dot_color = if view.qr_error.is_some() {
-        p.bad
-    } else {
-        p.warn
-    };
-
-    let qr_area = match &view.qr_image {
-        Some(path) => div()
-            .w(px(196.0))
-            .h(px(196.0))
-            .flex()
-            .items_center()
-            .justify_center()
-            .rounded(px(10.0))
-            .bg(rgb(0xffffff))
-            .border_1()
-            .border_color(rgb(p.line))
-            .child(img(SharedString::from(path.clone())).w(px(184.0)).h(px(184.0)))
-            .into_any_element(),
-        None => div()
-            .w(px(196.0))
-            .h(px(196.0))
-            .flex()
-            .items_center()
-            .justify_center()
-            .rounded(px(10.0))
-            .bg(rgb(p.surface_2))
-            .border_1()
-            .border_color(rgb(p.line_2))
-            .text_size(px(11.5))
-            .text_color(rgb(p.text_3))
-            .child("二维码加载中")
-            .into_any_element(),
-    };
-
-    div()
-        .absolute()
-        .inset_0()
-        .flex()
-        .items_center()
-        .justify_center()
-        .bg(rgba(0x0f121675))
-        // 遮罩必须吃掉鼠标：否则点在弹窗外壳上会穿透到后面的主界面控件
-        // （时间选择器里点「时」会同时点到底下「失败重试」的下拉，就是这个原因）
-        .occlude()
-        .child(
-            div()
-                .w(px(420.0))
-                .flex()
-                .flex_col()
-                .rounded(px(14.0))
-                .bg(rgb(p.surface))
-                .border_1()
-                .border_color(rgb(p.line))
-                .overflow_hidden()
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap(px(8.0))
-                        .px(px(15.0))
-                        .py(px(13.0))
-                        .border_b_1()
-                        .border_color(rgb(p.line))
-                        .child(img("logo-64.png").w(px(16.0)).h(px(16.0)))
-                        .child(
-                            div()
-                                .text_size(px(13.0))
-                                .text_color(rgb(p.text))
-                                .child("添加账号"),
-                        )
-                        .child(div().flex_1())
-                        .child(
-                            div()
-                                .id("qr-close")
-                                .w(px(24.0))
-                                .h(px(24.0))
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .rounded(px(5.0))
-                                .cursor_pointer()
-                                .text_size(px(10.0))
-                                .text_color(rgb(p.text_2))
-                                .hover(move |style| style.bg(rgb(p.surface_3)))
-                                .on_click(cx.listener(|view, _, _, cx| {
-                                    view.overlay = Overlay::None;
-                                    view.qr = None;
-                                    view.qr_image = None;
-                                    view.qr_error = None;
-                                    cx.notify();
-                                }))
-                                .child("✕"),
-                        ),
-                )
-                .child(
-                    div()
-                        .p(px(18.0))
-                        .flex()
-                        .flex_col()
-                        .items_center()
-                        .gap(px(11.0))
-                        .child(qr_area)
-                        .child(
-                            div()
-                                .text_size(px(13.0))
-                                .text_color(rgb(p.text))
-                                .child("用微信扫码并确认"),
-                        )
-                        .child(
-                            div()
-                                .text_size(px(11.5))
-                                .text_color(rgb(p.text_3))
-                                .child("扫码成功后自动创建任务"),
-                        )
-                        .child(
-                            div()
-                                .w_full()
-                                .flex()
-                                .items_center()
-                                .gap(px(8.0))
-                                .px(px(11.0))
-                                .py(px(9.0))
-                                .rounded(px(8.0))
-                                .bg(rgb(p.surface_2))
-                                .border_1()
-                                .border_color(rgb(p.line))
-                                .child(dot(dot_color, false, p))
-                                .child(
-                                    div()
-                                        .flex_1()
-                                        .text_size(px(11.5))
-                                        .text_color(rgb(p.text_2))
-                                        .child(status_text),
-                                ),
-                        )
-                        .child(
-                            div()
-                                .text_size(px(11.5))
-                                .text_color(rgb(p.text_3))
-                                .text_center()
-                                .child("扫码完成后可继续添加账号，或直接在主界面填入地点与时间。"),
-                        ),
-                )
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap(px(8.0))
-                        .px(px(15.0))
-                        .py(px(11.0))
-                        .bg(rgb(p.surface_2))
-                        .border_t_1()
-                        .border_color(rgb(p.line))
-                        .child(div().flex_1())
-                        .child(
-                            button("取消", BtnKind::Default, BtnSize::Small, false, p)
-                                .id("qr-cancel")
-                                .cursor_pointer()
-                                .on_click(click(cx, |view, _, _, cx| {
-                                    view.overlay = Overlay::None;
-                                    view.qr = None;
-                                    view.qr_image = None;
-                                    view.qr_error = None;
-                                    cx.notify();
-                                })),
-                        )
-                        .child(
-                            button("重新生成", BtnKind::Primary, BtnSize::Small, !waiting, p)
-                                .id("qr-refresh")
-                                .cursor_pointer()
-                                .on_click(click(cx, |view, _, _, cx| {
-                                    view.qr_image = None;
-                                    view.qr_error = None;
-                                    let path = view.state.paths.config_file();
-                                    view.qr = Some(start(path));
-                                    cx.notify();
-                                })),
-                        ),
-                ),
-        )
-        .into_any_element()
+/// 扫码弹窗的内容视图。
+///
+/// 内容（二维码图、状态行）跟着后台线程变，所以必须是一个会自己刷新的实体：
+/// 它观察 `AppView`，主界面每轮轮询更新状态时它会重绘。
+pub struct QrModal {
+    owner: WeakEntity<AppView>,
 }
 
-/// 新建草稿时用（供未来「手动填写 Cookie」入口复用）。
-pub fn empty_draft() -> Draft {
-    Draft {
-        acc: "30".into(),
-        retry_attempts: "3".into(),
-        retry_delay: "5".into(),
-        ..Draft::default()
+impl QrModal {
+    /// 打开弹窗；二维码的拉取由 `AppView::start_qr_session` 负责。
+    pub fn open(owner: WeakEntity<AppView>, window: &mut Window, cx: &mut Context<AppView>) {
+        let content = cx.new(|cx| {
+            if let Some(app) = owner.upgrade() {
+                // 主界面 notify（轮询到新状态）时跟着重绘
+                cx.observe(&app, |_, _, cx| cx.notify()).detach();
+            }
+            QrModal {
+                owner: owner.clone(),
+            }
+        });
+        window.open_dialog(cx, move |dialog, _, _| {
+            dialog
+                .title("添加账号")
+                .w(px(420.0))
+                .centered()
+                .child(content.clone())
+        });
+    }
+}
+
+impl Render for QrModal {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let Some(owner) = self.owner.upgrade() else {
+            return div().into_any_element();
+        };
+        let (dark, image, error) = {
+            let app = owner.read(cx);
+            (app.dark, app.qr_image.clone(), app.qr_error.clone())
+        };
+        let p: &'static Palette = if dark { &DARK } else { &LIGHT };
+
+        let status_text = if let Some(error) = &error {
+            error.clone()
+        } else if image.is_some() {
+            "等待扫码…".to_string()
+        } else {
+            "正在获取二维码…".to_string()
+        };
+        let dot_color = if error.is_some() { p.bad } else { p.warn };
+
+        let qr_area = match &image {
+            Some(path) => div()
+                .w(px(196.0))
+                .h(px(196.0))
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded(px(10.0))
+                .bg(rgb(0xffffff))
+                .border_1()
+                .border_color(rgb(p.line))
+                .child(img(SharedString::from(path.clone())).w(px(184.0)).h(px(184.0)))
+                .into_any_element(),
+            None => div()
+                .w(px(196.0))
+                .h(px(196.0))
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded(px(10.0))
+                .bg(rgb(p.surface_2))
+                .border_1()
+                .border_color(rgb(p.line_2))
+                .text_size(px(11.5))
+                .text_color(rgb(p.text_3))
+                .child("二维码加载中")
+                .into_any_element(),
+        };
+
+        let cancel = {
+            let owner = owner.clone();
+            Button::new("qr-cancel")
+                .small()
+                .label("取消")
+                .on_click(move |_, window, cx| {
+                    let _ = owner.update(cx, |view, cx| view.cancel_qr(cx));
+                    window.close_dialog(cx);
+                })
+        };
+        let retry = {
+            let owner = owner.clone();
+            Button::new("qr-retry")
+                .small()
+                .primary()
+                .label("重新生成")
+                .on_click(move |_, window, cx| {
+                    let _ = owner.update(cx, |view, cx| view.restart_qr(cx));
+                })
+        };
+
+        div()
+            .flex()
+            .flex_col()
+            .items_center()
+            .gap(px(11.0))
+            .child(qr_area)
+            .child(
+                div()
+                    .text_size(px(13.0))
+                    .text_color(rgb(p.text))
+                    .child("用微信扫码并确认"),
+            )
+            .child(
+                div()
+                    .text_size(px(11.5))
+                    .text_color(rgb(p.text_3))
+                    .child("扫码成功后自动创建任务"),
+            )
+            .child(
+                div()
+                    .w_full()
+                    .flex()
+                    .items_center()
+                    .gap(px(8.0))
+                    .px(px(11.0))
+                    .py(px(9.0))
+                    .rounded(px(8.0))
+                    .bg(rgb(p.surface_2))
+                    .border_1()
+                    .border_color(rgb(p.line))
+                    .child(dot(dot_color, false, p))
+                    .child(
+                        div()
+                            .flex_1()
+                            .text_size(px(11.5))
+                            .text_color(rgb(p.text_2))
+                            .child(status_text),
+                    ),
+            )
+            .child(
+                div()
+                    .text_size(px(11.5))
+                    .text_color(rgb(p.text_3))
+                    .text_align(gpui_kit::TextAlign::Center)
+                    .child("扫码完成后可继续添加账号，或直接在主界面填入地点与时间。"),
+            )
+            .child(
+                div()
+                    .w_full()
+                    .flex()
+                    .items_center()
+                    .gap(px(8.0))
+                    .pt(px(4.0))
+                    .child(div().flex_1())
+                    .child(cancel)
+                    .child(retry),
+            )
+            .into_any_element()
     }
 }

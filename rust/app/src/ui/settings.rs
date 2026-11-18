@@ -11,7 +11,7 @@ use gpui_kit::component::{Icon, IconName};
 use gpui_kit::{div, px, rgb, AnyElement, App, Context, Div, Hsla};
 
 use crate::theme::*;
-use crate::ui::main_view::{AppView, Overlay, SettingsTab};
+use crate::ui::main_view::{AppView, SettingsTab};
 use crate::ui::widgets::*;
 
 pub fn render(view: &mut AppView, p: &Palette, cx: &mut Context<AppView>) -> AnyElement {

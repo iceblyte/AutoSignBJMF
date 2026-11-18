@@ -1,16 +1,24 @@
 //! 「添加执行时间」：快捷时间 + 时/分下拉点选，不再手输 `21:31:00`。
 //!
 //! 分钟粒度是 5 分钟 —— 签到时间点没必要精确到个位，60 个格子也点得累。
-//! 布局沿用原型的组件语言：14px 圆角卡片 + 顶部标题栏 + 底部按钮行。
+//!
+//! 结构：内容直接写在组件库 Dialog 的 builder 里（和「编辑密钥」弹窗一致）。
+//! 之所以不像扫码弹窗那样做成 `Entity<视图>`：这里唯一会变的是两个下拉的选中值，
+//! 而 `Select` 本身就是实体、选中后自己重绘，不需要外层再包一个视图。
+//! 于是：
+//! - 快捷项是一次性动作（点一下直接添加并关闭），不存「选中高亮」这种状态；
+//! - 冲突/失败用库的 `AlertDialog` 说明原因，不在内容里留错误行；
+//! - 点「添加」时现读两个下拉的选中值（`selected_value`），不维护影子状态。
 
 use chrono::Timelike;
-use gpui_kit::component::select::Select;
+use gpui_kit::component::button::{Button, ButtonVariant, ButtonVariants as _};
+use gpui_kit::component::select::{Select, SelectState};
+use gpui_kit::component::{ActiveTheme as _, Sizable as _, WindowExt as _};
+use gpui_kit::component::IndexPath;
 use gpui_kit::prelude::*;
-use gpui_kit::{div, px, rgba, rgb, AnyElement, Context, SharedString};
+use gpui_kit::{div, px, App, Entity, SharedString, WeakEntity, Window};
 
-use crate::theme::*;
-use crate::ui::main_view::{select_box, AppView, Overlay};
-use crate::ui::widgets::{button, choice_chip, click, BtnKind, BtnSize};
+use crate::ui::main_view::{select_box, AppView};
 
 const PANEL_W: f32 = 420.0;
 /// 分钟粒度：0, 5, 10 ... 55
@@ -18,6 +26,8 @@ pub const MINUTE_STEP: u32 = 5;
 
 /// 快捷时间：早上上学、午间、晚上各一个。
 const QUICK: [(u32, u32); 3] = [(7, 30), (12, 0), (21, 30)];
+
+type NumberSelect = Entity<SelectState<Vec<SharedString>>>;
 
 /// 打开选择器时的默认时间：取列表里最后一个，往后挪一小时并对齐到 5 分钟；没有就 07:30。
 pub fn default_pick(times: &[String]) -> (u32, u32) {
@@ -49,220 +59,170 @@ fn pick_text(hour: u32, minute: u32) -> String {
     format!("{hour:02}:{minute:02}")
 }
 
-pub fn render(view: &mut AppView, p: &Palette, cx: &mut Context<AppView>) -> AnyElement {
-    let (hour, minute) = (view.picker_hour, view.picker_minute);
-
-    // ---- 快捷时间：常用时刻 + 当前时间 ----
-    let mut quick = div().flex().items_center().gap(px(4.0)).flex_wrap();
-    for (h, m) in QUICK {
-        let selected = h == hour && m == minute;
-        let chip = choice_chip(pick_text(h, m), selected, 58.0, p);
-        quick = quick.child(if selected {
-            chip.into_any_element()
-        } else {
-            chip.id(SharedString::from(format!("quick-{h}-{m}")))
-                .on_click(cx.listener(move |this, _, window, cx| {
-                    this.set_picker(h, m, window, cx);
-                    cx.notify();
-                }))
-            .into_any_element()
-        });
+/// 生成下拉选项：`00`..`23` / `00`, `05` … `55`。
+fn labels(from: u32, to: u32, step: u32) -> Vec<SharedString> {
+    let mut out = Vec::new();
+    let mut value = from;
+    while value <= to {
+        out.push(SharedString::from(format!("{value:02}")));
+        value += step.max(1);
     }
-    let now = now_pick();
-    let now_selected = now == (hour, minute);
-    let now_chip = choice_chip("当前时间", now_selected, 74.0, p);
-    quick = quick.child(if now_selected {
-        now_chip.into_any_element()
-    } else {
-        now_chip
-            .id("quick-now")
-            .on_click(cx.listener(|this, _, window, cx| {
-                let (h, m) = now_pick();
-                this.set_picker(h, m, window, cx);
-                cx.notify();
-            }))
-            .into_any_element()
+    out
+}
+
+/// 从下拉实体里读当前选中的数值。
+fn selected_number(state: &NumberSelect, cx: &App) -> u32 {
+    state
+        .read(cx)
+        .selected_value()
+        .and_then(|value| value.to_string().parse::<u32>().ok())
+        .unwrap_or(0)
+}
+
+/// 写入一个时间点：成功就关弹窗，失败用 AlertDialog 说明原因。
+fn add(owner: WeakEntity<AppView>, hour: u32, minute: u32, window: &mut Window, cx: &mut App) {
+    let value = to_config_value(hour, minute);
+    let Some(view) = owner.upgrade() else {
+        window.close_dialog(cx);
+        return;
+    };
+    match view.update(cx, |view, cx| view.add_time_from_picker(&value, cx)) {
+        Ok(()) => window.close_dialog(cx),
+        Err(error) => {
+            window.close_dialog(cx);
+            let title = format!("{} 没能添加", pick_text(hour, minute));
+            window.open_alert_dialog(cx, move |alert, _, _| {
+                alert
+                    .title(title.clone())
+                    .description(error.clone())
+                    .ok_variant(ButtonVariant::Danger)
+            });
+        }
+    }
+}
+
+/// 打开「添加执行时间」弹窗。
+pub fn open(
+    owner: WeakEntity<AppView>,
+    times: &[String],
+    window: &mut Window,
+    cx: &mut Context<AppView>,
+) {
+    let (hour, minute) = default_pick(times);
+
+    // 两个下拉的实体必须提前建好：dialog 的 builder 可能重跑，不能在里面 new。
+    let hour_select: NumberSelect = cx.new(|cx| {
+        SelectState::new(
+            labels(0, 23, 1),
+            Some(IndexPath::new(hour as usize)),
+            window,
+            cx,
+        )
+    });
+    let minute_select: NumberSelect = cx.new(|cx| {
+        SelectState::new(
+            labels(0, 55, MINUTE_STEP),
+            Some(IndexPath::new((minute / MINUTE_STEP) as usize)),
+            window,
+            cx,
+        )
     });
 
-    // ---- 时 / 分下拉：组件库 Select（弹出层由库挂到 Root 上） ----
-    let hour_state = view.hour_select.clone();
-    let minute_state = view.minute_select.clone();
-    let hour_dd = select_box(70.0, Select::new(&hour_state));
-    let minute_dd = select_box(70.0, Select::new(&minute_state));
+    window.open_dialog(cx, move |dialog, _window, cx| {
+        let hint_color = cx.theme().muted_foreground;
 
-    // 时 / 分一行；展开的列表另起一行（否则会被 flex_row 挤到右边）
-    let mut picker_block = div()
-        .flex()
-        .flex_col()
-        .w_full()
-        .gap(px(8.0))
-        .child(
-            div()
-                .flex()
-                .w_full()
-                .items_center()
-                .gap(px(8.0))
-                .child(hour_dd)
-                .child(
-                    div()
-                        .text_size(px(14.0))
-                        .text_color(rgb(p.text_3))
-                        .child(":"),
-                )
-                .child(minute_dd)
-                .child(
-                    div()
-                        .text_size(px(11.0))
-                        .text_color(rgb(p.text_3))
-                        .child("5 分钟一档"),
-                ),
+        // ---- 快捷：点一下直接添加（少两步点击）----
+        let mut quick = div().flex().items_center().gap(px(4.0)).flex_wrap();
+        for (h, m) in QUICK {
+            let owner = owner.clone();
+            quick = quick.child(
+                Button::new(SharedString::from(format!("quick-{h}-{m}")))
+                    .xsmall()
+                    .label(pick_text(h, m))
+                    .on_click(move |_, window, cx| add(owner.clone(), h, m, window, cx)),
+            );
+        }
+        let owner_now = owner.clone();
+        quick = quick.child(
+            Button::new("quick-now")
+                .xsmall()
+                .label("当前时间")
+                .on_click(move |_, window, cx| {
+                    let (h, m) = now_pick();
+                    add(owner_now.clone(), h, m, window, cx);
+                }),
         );
 
-    let conflict = view
-        .state
-        .settings
-        .times
-        .iter()
-        .any(|existing| existing == &to_config_value(hour, minute));
+        // ---- 时 / 分（库的 Select，选中值自己维护）----
+        let confirm = {
+            let owner = owner.clone();
+            let hour_select = hour_select.clone();
+            let minute_select = minute_select.clone();
+            Button::new("picker-confirm")
+                .small()
+                .primary()
+                .label("添加")
+                .on_click(move |_, window, cx| {
+                    let hour = selected_number(&hour_select, cx);
+                    let minute = selected_number(&minute_select, cx);
+                    add(owner.clone(), hour, minute, window, cx);
+                })
+        };
+        let cancel = Button::new("picker-cancel")
+            .small()
+            .label("取消")
+            .on_click(|_, window, cx| window.close_dialog(cx));
 
-    let hint = if conflict {
-        div()
-            .text_size(px(11.0))
-            .text_color(rgb(p.warn))
-            .child(format!("{} 已经在列表里了", pick_text(hour, minute)))
-    } else {
-        div()
-            .text_size(px(11.0))
-            .text_color(rgb(p.text_3))
-            .child("点「时」或「分」展开列表选择")
-    };
-
-    div()
-        .absolute()
-        .inset_0()
-        .flex()
-        .items_center()
-        .justify_center()
-        .bg(rgba(0x0f121675))
-        // 遮罩必须吃掉鼠标：否则点在弹窗外壳上会穿透到后面的主界面控件
-        // （时间选择器里点「时」会同时点到底下「失败重试」的下拉，就是这个原因）
-        .occlude()
-        .child(
-            div()
-                .w(px(PANEL_W))
-                .flex()
-                .flex_col()
-                .rounded(px(14.0))
-                .bg(rgb(p.surface))
-                .border_1()
-                .border_color(rgb(p.line))
-                .overflow_hidden()
-                // ---- 标题栏 ----
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap(px(8.0))
-                        .px(px(15.0))
-                        .py(px(13.0))
-                        .border_b_1()
-                        .border_color(rgb(p.line))
-                        .child(
-                            div()
-                                .text_size(px(13.0))
-                                .text_color(rgb(p.text))
-                                .child("添加执行时间"),
-                        )
-                        .child(div().flex_1())
-                        .child(
-                            div()
-                                .id("picker-close")
-                                .w(px(22.0))
-                                .h(px(22.0))
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .rounded(px(5.0))
-                                .text_size(px(14.0))
-                                .text_color(rgb(p.text_3))
-                                .cursor_pointer()
-                                .hover(|style| style.bg(rgb(p.surface_3)))
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.overlay = Overlay::None;
-                                    cx.notify();
-                                }))
-                                .child("×"),
-                        ),
-                )
-                // ---- 内容 ----
-                .child(
-                    div()
-                        .flex()
-                        .flex_col()
-                        .gap(px(10.0))
-                        .px(px(16.0))
-                        .py(px(14.0))
-                        .child(
-                            div()
-                                .text_size(px(10.5))
-                                .text_color(rgb(p.text_3))
-                                .child("快捷"),
-                        )
-                        .child(quick)
-                        .child(
-                            div()
-                                .text_size(px(10.5))
-                                .text_color(rgb(p.text_3))
-                                .child("时间"),
-                        )
-                        .child(picker_block),
-                )
-                // ---- 底部 ----
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap(px(8.0))
-                        .px(px(16.0))
-                        .py(px(13.0))
-                        .border_t_1()
-                        .border_color(rgb(p.line))
-                        .child(hint)
-                        .child(div().flex_1())
-                        .child(
-                            button("取消", BtnKind::Default, BtnSize::Small, false, p)
-                                .id("picker-cancel")
-                                .cursor_pointer()
-                                .on_click(click(cx, |this, _, _, cx| {
-                                    this.overlay = Overlay::None;
-                                    cx.notify();
-                                })),
-                        )
-                        .child(
-                            button("添加", BtnKind::Primary, BtnSize::Small, conflict, p)
-                                .id("picker-confirm")
-                                .when(!conflict, |element| {
-                                    element.cursor_pointer().on_click(click(cx, 
-                                        |this, _, _, cx| {
-                                            let value = to_config_value(
-                                                this.picker_hour,
-                                                this.picker_minute,
-                                            );
-                                            match this.state.add_time(&value) {
-                                                Ok(()) => {
-                                                    this.overlay = Overlay::None;
-                                                                    this.error = None;
-                                                }
-                                                Err(error) => this.error = Some(error.0),
-                                            }
-                                            cx.notify();
-                                        },
-                                    ))
-                                }),
-                        ),
-                ),
-        )
-        .into_any_element()
+        dialog
+            .title("添加执行时间")
+            .w(px(PANEL_W))
+            .centered()
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(10.0))
+                    .child(div().text_size(px(10.5)).text_color(hint_color).child("快捷"))
+                    .child(quick)
+                    .child(div().text_size(px(10.5)).text_color(hint_color).child("时间"))
+                    .child(
+                        div()
+                            .flex()
+                            .w_full()
+                            .items_center()
+                            .gap(px(8.0))
+                            .child(select_box(70.0, Select::new(&hour_select)))
+                            .child(
+                                div()
+                                    .text_size(px(14.0))
+                                    .text_color(hint_color)
+                                    .child(":"),
+                            )
+                            .child(select_box(70.0, Select::new(&minute_select)))
+                            .child(
+                                div()
+                                    .text_size(px(11.0))
+                                    .text_color(hint_color)
+                                    .child("5 分钟一档"),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(8.0))
+                            .child(
+                                div()
+                                    .text_size(px(11.0))
+                                    .text_color(hint_color)
+                                    .child("点「时」或「分」展开列表选择"),
+                            )
+                            .child(div().flex_1())
+                            .child(cancel)
+                            .child(confirm),
+                    ),
+            )
+    });
 }
 
 #[cfg(test)]
@@ -306,5 +266,13 @@ mod tests {
     fn 拼接成配置用的格式() {
         assert_eq!(to_config_value(9, 5), "09:05:00");
         assert_eq!(to_config_value(23, 55), "23:55:00");
+    }
+
+    #[test]
+    fn 小时与分钟选项数量与补零都正确() {
+        assert_eq!(labels(0, 23, 1).len(), 24);
+        assert_eq!(labels(0, 55, MINUTE_STEP).len(), 12);
+        assert_eq!(labels(0, 23, 1)[0].to_string(), "00");
+        assert_eq!(labels(0, 55, MINUTE_STEP)[1].to_string(), "05");
     }
 }

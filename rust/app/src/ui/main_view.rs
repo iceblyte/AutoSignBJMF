@@ -20,6 +20,7 @@ use gpui_kit::base::StyledExt;
 use gpui_kit::component::scroll::ScrollableElement;
 use gpui_kit::assets::IconNamed;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
+use gpui_kit::component::WindowExt as _;
 use gpui_kit::component::select::{Select, SelectEvent, SelectState};
 use gpui_kit::component::Sizable as _;
 use gpui_kit::component::IndexPath;
@@ -43,17 +44,6 @@ pub enum Field {
 }
 
 
-/// 打开的面板 / 弹窗。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Overlay {
-    None,
-    Qr,
-    Settings(SettingsTab),
-    CloseHint,
-    /// 添加执行时间：从列表点选，不手输
-    TimePicker,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SettingsTab {
     General,
@@ -67,7 +57,6 @@ pub struct AppView {
     /// 调度线程 + 托盘
     pub runtime: std::sync::Arc<crate::runtime::Runtime>,
     pub dark: bool,
-    pub overlay: Overlay,
     /// 「＋ 添加」正在输入的时间点
     pub add_time: String,
     /// 保存失败时的提示
@@ -78,16 +67,10 @@ pub struct AppView {
     pub qr: Option<crate::ui::qr_modal::QrHandle>,
     pub qr_image: Option<String>,
     pub qr_error: Option<String>,
-    /// 时间选择器里当前选中的时 / 分
-    pub picker_hour: u32,
-    pub picker_minute: u32,
     /// 重试次数下拉（1–10）
     pub retry_attempts_select: Entity<SelectState<Vec<SharedString>>>,
     /// 重试间隔下拉（1–60 分钟）
     pub retry_delay_select: Entity<SelectState<Vec<SharedString>>>,
-    /// 时间选择器的小时 / 分钟下拉
-    pub hour_select: Entity<SelectState<Vec<SharedString>>>,
-    pub minute_select: Entity<SelectState<Vec<SharedString>>>,
     /// 设置窗口的句柄：有了它就说明设置已经开着（同一时刻只允许一个）。
     pub settings_window: Option<WindowId>,
     /// 正在开窗中：双击「设置」时不至于开出两个窗口
@@ -160,20 +143,8 @@ impl AppView {
     ) -> Self {
         // 用上次存下来的主题启动（缺字段/旧配置 → 跟随系统）
         let dark = state.theme.is_dark(system_is_dark());
-        // 时间选择器的初始值跟着现有时间走，打开就能少点几下
-        let (picker_hour, picker_minute) =
-            crate::ui::time_picker::default_pick(&state.settings.times);
-        let mut overlay = Overlay::None;
-        // 截图/QA：AUTOSIGN_OPEN=settings|data|qr|time 直接打开对应覆盖层
-        if let Ok(value) = std::env::var("AUTOSIGN_OPEN") {
-            overlay = match value.as_str() {
-                "settings" => Overlay::None,
-                "data" => Overlay::None,
-                "qr" => Overlay::Qr,
-                "time" => Overlay::TimePicker,
-                _ => Overlay::None,
-            };
-        }
+        // 截图/QA：AUTOSIGN_OPEN=qr|time 在建好视图后打开对应弹窗
+        let open_for_qa = std::env::var("AUTOSIGN_OPEN").ok();
 
         // QA 回归用：AUTOSIGN_TEST_DIALOG=import|export 启动 2 秒后自动弹文件对话框。
         // 目的是能脚本化验证「对话框打开时主窗口仍然响应」（卡死是历史 bug）。
@@ -335,81 +306,6 @@ impl AppView {
             .detach();
         }
 
-        // ---- 下拉：全部用组件库的 Select（重试次数 / 重试间隔 / 时 / 分）----
-        // 库自己管弹出层、限高滚动、键盘上下、点外面收起，所以之前那套
-        // 「浮层遮罩 + 手算坐标 + 分列 + occlude」全部删掉了。
-        let attempts_index = state.settings.retry_attempts.clamp(1, 10) as usize - 1;
-        let delay_index = state.settings.retry_delay_minutes.clamp(1, 60) as usize - 1;
-        let retry_attempts_select = cx.new(|cx| {
-            SelectState::new(
-                number_labels(1, 10, 1, 0),
-                Some(IndexPath::new(attempts_index)),
-                window,
-                cx,
-            )
-        });
-        let retry_delay_select = cx.new(|cx| {
-            SelectState::new(
-                number_labels(1, 60, 1, 0),
-                Some(IndexPath::new(delay_index)),
-                window,
-                cx,
-            )
-        });
-        let hour_select = cx.new(|cx| {
-            SelectState::new(
-                number_labels(0, 23, 1, 2),
-                Some(IndexPath::new(picker_hour as usize)),
-                window,
-                cx,
-            )
-        });
-        let minute_select = cx.new(|cx| {
-            SelectState::new(
-                number_labels(0, 55, crate::ui::time_picker::MINUTE_STEP, 2),
-                Some(IndexPath::new((picker_minute / crate::ui::time_picker::MINUTE_STEP) as usize)),
-                window,
-                cx,
-            )
-        });
-
-        cx.subscribe_in(&retry_attempts_select, window, |this, _, event, _, cx| {
-            if let SelectEvent::Confirm(Some(value)) = event {
-                if let Ok(attempts) = value.to_string().parse::<u32>() {
-                    let _ = this.state.set_retry_attempts(attempts);
-                    cx.notify();
-                }
-            }
-        })
-        .detach();
-        cx.subscribe_in(&retry_delay_select, window, |this, _, event, _, cx| {
-            if let SelectEvent::Confirm(Some(value)) = event {
-                if let Ok(delay) = value.to_string().parse::<u32>() {
-                    let _ = this.state.set_retry_delay(delay);
-                    cx.notify();
-                }
-            }
-        })
-        .detach();
-        cx.subscribe_in(&hour_select, window, |this, _, event, _, cx| {
-            if let SelectEvent::Confirm(Some(value)) = event {
-                if let Ok(hour) = value.to_string().parse::<u32>() {
-                    this.picker_hour = hour;
-                    cx.notify();
-                }
-            }
-        })
-        .detach();
-        cx.subscribe_in(&minute_select, window, |this, _, event, _, cx| {
-            if let SelectEvent::Confirm(Some(value)) = event {
-                if let Ok(minute) = value.to_string().parse::<u32>() {
-                    this.picker_minute = minute;
-                    cx.notify();
-                }
-            }
-        })
-        .detach();
-
         // ---- 文本输入：组件库的 Input + InputState ----
         // 编辑、光标、选区、粘贴、中文输入法都由库负责，我们只管「值变了写回草稿」。
         let draft = state.draft.clone();
@@ -467,11 +363,49 @@ impl AppView {
         })
         .detach();
 
+        // ---- 下拉：全部用组件库的 Select（重试次数 / 重试间隔 / 时 / 分）----
+        // 库自己管弹出层、限高滚动、键盘上下、点外面收起，所以之前那套
+        // 「浮层遮罩 + 手算坐标 + 分列 + occlude」全部删掉了。
+        let attempts_index = state.settings.retry_attempts.clamp(1, 10) as usize - 1;
+        let delay_index = state.settings.retry_delay_minutes.clamp(1, 60) as usize - 1;
+        let retry_attempts_select = cx.new(|cx| {
+            SelectState::new(
+                number_labels(1, 10, 1, 0),
+                Some(IndexPath::new(attempts_index)),
+                window,
+                cx,
+            )
+        });
+        let retry_delay_select = cx.new(|cx| {
+            SelectState::new(
+                number_labels(1, 60, 1, 0),
+                Some(IndexPath::new(delay_index)),
+                window,
+                cx,
+            )
+        });
+        cx.subscribe_in(&retry_attempts_select, window, |this, _, event, _, cx| {
+            if let SelectEvent::Confirm(Some(value)) = event {
+                if let Ok(attempts) = value.to_string().parse::<u32>() {
+                    let _ = this.state.set_retry_attempts(attempts);
+                    cx.notify();
+                }
+            }
+        })
+        .detach();
+        cx.subscribe_in(&retry_delay_select, window, |this, _, event, _, cx| {
+            if let SelectEvent::Confirm(Some(value)) = event {
+                if let Ok(delay) = value.to_string().parse::<u32>() {
+                    let _ = this.state.set_retry_delay(delay);
+                    cx.notify();
+                }
+            }
+        })
+        .detach();
         let mut view = Self {
             state,
             runtime,
             dark,
-            overlay,
             lat_input,
             lng_input,
             wx_input,
@@ -483,12 +417,8 @@ impl AppView {
             qr: None,
             qr_image: None,
             qr_error: None,
-            picker_hour,
-            picker_minute,
             retry_attempts_select,
             retry_delay_select,
-            hour_select,
-            minute_select,
             settings_window: None,
             settings_opening: false,
             main_window_id: Some(main_window_id),
@@ -504,6 +434,27 @@ impl AppView {
             close_hint_muted: false,
             close_signal: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         };
+
+        // 截图/QA：弹窗必须等窗口自己的 Root 装好才能开
+        // （open_dialog 依赖窗口级的组件状态，在视图构造期间调用会 panic），
+        // 所以这里延后一拍再开。
+        match open_for_qa.as_deref() {
+            Some("time") => {
+                let this = cx.entity();
+                cx.spawn_in(window, async move |_, cx| {
+                    cx.background_executor()
+                        .timer(std::time::Duration::from_millis(400))
+                        .await;
+                    let _ = this.update_in(cx, |view, window, cx| {
+                        let times = view.state.settings.times.clone();
+                        crate::ui::time_picker::open(cx.entity().downgrade(), &times, window, cx);
+                    });
+                })
+                .detach();
+            }
+            Some("qr") => view.start_qr_login(window, cx),
+            _ => {}
+        }
 
         // QA：AUTOSIGN_TEST_SCENE=1 复现用户操作序列
         // 开设置 → 隐藏设置 → 隐藏主窗口 → 再开设置（应能弹出）
@@ -619,7 +570,6 @@ impl AppView {
                 // 走缓存的 HWND：隐藏状态下依然有效
                 crate::system::win::show_main_window();
                 self.main_hidden = false;
-                self.overlay = Overlay::None;
                 // 窗口是被 ShowWindow 直接显示的，gpui 在 WM_SHOWWINDOW 里画的那一帧
                 // 拿不到新的布局/场景 —— 右上角的「— ✕」要等鼠标移进窗口才补上。
                 // 这里主动刷新：先立刻刷一次，再隔一帧补一次（显示动画期间可能被打断）。
@@ -779,8 +729,18 @@ impl AppView {
         for (kind, line) in self.runtime.drain() {
             self.state.log(kind, line);
         }
-        if matches!(self.overlay, Overlay::Qr) {
-            crate::ui::qr_modal::poll(self);
+        if self.qr.is_some() {
+            // 扫码会话进行中：每轮把后台线程的最新状态搬进界面
+            let waiting = crate::ui::qr_modal::poll(self);
+            cx.notify();
+            if !waiting {
+                // 会话结束（成功或失败）：把扫码弹窗收起来
+                if let Some(id) = self.main_window_id {
+                    if let Some(handle) = cx.windows().into_iter().find(|h| h.window_id() == id) {
+                        let _ = handle.update(cx, |_, window, cx| window.close_dialog(cx));
+                    }
+                }
+            }
         }
         // 关窗兜底：系统关窗（Alt+F4 / 任务栏关闭）没有 Window 引用，
         // 由 main.rs 的 should_close 回调置标志，这里收尾。
@@ -814,13 +774,34 @@ impl AppView {
 
 
 
-    /// 扫码添加：真的去拉一张二维码（后台线程），成功后插入账号。
-    fn start_qr_login(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
-        self.overlay = Overlay::Qr;
+    /// 扫码添加：后台线程去拉二维码，成功后自动插入账号。
+    ///
+    /// 弹窗用组件库 Dialog，内容是一个会自己刷新的视图（要跟着二维码变）。
+    fn start_qr_login(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.start_qr_session(cx);
+        crate::ui::qr_modal::QrModal::open(cx.entity().downgrade(), window, cx);
+    }
+
+    /// 只起会话、不动弹窗（「重新生成」用）。
+    pub fn start_qr_session(&mut self, cx: &mut Context<Self>) {
         self.qr_error = None;
         self.qr_image = None;
         self.state.log(LogKind::Info, "正在获取登录二维码…");
         self.qr = Some(crate::ui::qr_modal::start(self.state.paths.config_file()));
+        cx.notify();
+    }
+
+    /// 重新生成二维码：弹窗不关，换一张新码。
+    pub fn restart_qr(&mut self, cx: &mut Context<Self>) {
+        self.start_qr_session(cx);
+    }
+
+    /// 放弃扫码：关掉会话，清掉图与错误。
+    pub fn cancel_qr(&mut self, cx: &mut Context<Self>) {
+        self.qr = None;
+        self.qr_image = None;
+        self.qr_error = None;
+        self.state.log(LogKind::Info, "已取消扫码");
         cx.notify();
     }
 
@@ -954,6 +935,24 @@ impl AppView {
     /// 之前是从设置页里直接改 `dark` 再 `sync_kit_theme`，而 `Theme::change`
     /// 会刷新所有窗口 —— 一旦某个窗口被顺带显示/顶到别的窗口后面，
     /// 用户看到的就是「设置页没了、主窗口冒出来」。
+    /// 时间选择器点「添加」：写进设置里的时间列表。
+    ///
+    /// 返回 `Err` 时弹窗留在原地显示原因（重复、格式非法等），不静默失败。
+    pub fn add_time_from_picker(&mut self, value: &str, cx: &mut Context<Self>) -> Result<(), String> {
+        match self.state.add_time(value) {
+            Ok(()) => {
+                self.error = None;
+                cx.notify();
+                Ok(())
+            }
+            Err(error) => {
+                self.error = Some(error.0.clone());
+                cx.notify();
+                Err(error.0)
+            }
+        }
+    }
+
     /// 把草稿里的值推回四个输入框。
     ///
     /// 只在「草稿被外部重灌」时调用（切账号 / 保存 / 取消编辑）——
@@ -971,29 +970,6 @@ impl AppView {
         });
         self.qq_input.update(cx, |state, cx| {
             state.set_value(draft.qq_key.clone(), window, cx);
-        });
-    }
-
-    /// 同步「添加执行时间」的当前值：改字段，同时把两个下拉的选中项摆正。
-    ///
-    /// 组件库的 Select 自己保存选中项，所以改 picker_hour/minute 时必须一起改，
-    /// 否则界面上显示的还是旧值（这是自研下拉换库之后最容易漏的一处）。
-    pub fn set_picker(
-        &mut self,
-        hour: u32,
-        minute: u32,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.picker_hour = hour.min(23);
-        self.picker_minute = minute;
-        let hour_index = self.picker_hour as usize;
-        let minute_index = (self.picker_minute / crate::ui::time_picker::MINUTE_STEP) as usize;
-        self.hour_select.update(cx, |state, cx| {
-            state.set_selected_index(Some(IndexPath::new(hour_index)), window, cx);
-        });
-        self.minute_select.update(cx, |state, cx| {
-            state.set_selected_index(Some(IndexPath::new(minute_index)), window, cx);
         });
     }
 
@@ -1036,10 +1012,9 @@ impl AppView {
     /// 下拉浮层 → 弹窗覆盖层 → 都没有就把窗口收到托盘（和点 ✕ 一致）。
     /// 参考 ElegantClipboard 的 dismiss_or_hide：先收临时层，最后才动窗口。
     fn dismiss_or_hide(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.overlay != Overlay::None {
-            // 编辑密钥时按 Esc = 放弃改动
-            self.overlay = Overlay::None;
-            cx.notify();
+        // 有弹窗就先关弹窗（Esc 由库负责，这里兜住「弹窗打开时按 Esc」的路径）
+        if window.has_active_dialog(cx) {
+            window.close_dialog(cx);
             return;
         }
         self.request_close(window, cx);
@@ -1954,11 +1929,7 @@ impl AppView {
                 .cursor_pointer()
                 .on_click(cx.listener(|this, _, window, cx| {
                     // 不再让用户手打 21:31:00，直接弹时间列表点选
-                    let (hour, minute) =
-                        crate::ui::time_picker::default_pick(&this.state.settings.times);
-                    this.set_picker(hour, minute, window, cx);
-                    this.overlay = Overlay::TimePicker;
-                    cx.notify();
+                    crate::ui::time_picker::open(cx.entity().downgrade(), &this.state.settings.times, window, cx);
                 }))
                 .into_any_element()
         });
@@ -2775,14 +2746,6 @@ impl Render for AppView {
                     .child(self.render_sidebar(p, cx))
                     .child(self.render_main(p, cx)),
             );
-
-        match self.overlay {
-            // 设置与「已最小化」提示都改成独立窗口了，这里只保留枚举值做兼容
-            Overlay::Settings(_) | Overlay::CloseHint => {}
-            Overlay::Qr => root = root.child(crate::ui::qr_modal::render(self, p, cx)),
-            Overlay::TimePicker => root = root.child(crate::ui::time_picker::render(self, p, cx)),
-            Overlay::None => {}
-        }
 
         root = root.on_mouse_down(
             MouseButton::Left,
