@@ -929,6 +929,7 @@ mod tests {
             ],
             config_changed: false,
             notified: false,
+            retry: Vec::new(),
         };
         state.apply_report(&report);
         assert!(state.running);
@@ -945,6 +946,7 @@ mod tests {
             ],
             config_changed: false,
             notified: false,
+            retry: Vec::new(),
         };
         state.apply_report(&all_failed);
         assert_eq!(state.last_exit, Some(1));

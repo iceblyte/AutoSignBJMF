@@ -21,6 +21,11 @@ pub struct Report {
     pub config_changed: bool,
     /// 汇总通知是否真的发出去了。
     pub notified: bool,
+    /// 下一轮重试要跑哪些账号（只放 `Error` 的下标）。
+    ///
+    /// 重试之所以按账号而不是按整轮：一个账号签成了、另一个失败了，
+    /// 整轮重跑会把已经签成的再提交一遍（用户看到的就是「成功了还在签」）。
+    pub retry: Vec<usize>,
 }
 
 impl Report {
@@ -36,6 +41,11 @@ impl Report {
         } else {
             0
         }
+    }
+
+    /// 还有需要重试的账号吗（决定调度器要不要再来一轮）。
+    pub fn needs_retry(&self) -> bool {
+        !self.retry.is_empty()
     }
 
     pub fn statuses(&self) -> Vec<(&str, &'static str)> {
@@ -72,6 +82,8 @@ pub struct Runner<'a, L: FnMut(&str)> {
     config_path: PathBuf,
     /// 这些下标的账号本轮跳过（界面里单独暂停的账号）。
     skip: BTreeSet<usize>,
+    /// 只跑这些下标（重试轮用：只重跑上一轮失败的账号）。
+    only: Option<BTreeSet<usize>>,
     log: L,
 }
 
@@ -87,6 +99,7 @@ impl<'a, L: FnMut(&str)> Runner<'a, L> {
             notifier,
             config_path: config_path.into(),
             skip: BTreeSet::new(),
+            only: None,
             log,
         }
     }
@@ -94,6 +107,15 @@ impl<'a, L: FnMut(&str)> Runner<'a, L> {
     /// 指定本轮要跳过的账号下标（被单独暂停的账号）。
     pub fn with_skip(mut self, skip: impl IntoIterator<Item = usize>) -> Self {
         self.skip = skip.into_iter().collect();
+        self
+    }
+
+    /// 只跑这些账号（重试轮用）。
+    ///
+    /// `None` = 全部账号（正常一轮）；`Some` = 只跑列出的下标，
+    /// 已经成功的账号不会被重复提交。
+    pub fn with_only(mut self, only: impl IntoIterator<Item = usize>) -> Self {
+        self.only = Some(only.into_iter().collect());
         self
     }
 
@@ -107,6 +129,11 @@ impl<'a, L: FnMut(&str)> Runner<'a, L> {
         let mut report = Report::default();
 
         for index in 0..config.students.len() {
+            if let Some(only) = &self.only {
+                if !only.contains(&index) {
+                    continue;
+                }
+            }
             if self.skip.contains(&index) {
                 // 被单独暂停的账号：不进报告、不发通知，只留一行日志
                 let name = config
@@ -119,6 +146,9 @@ impl<'a, L: FnMut(&str)> Runner<'a, L> {
             }
             let outcome = self.run_student(&mut config, index, &mut report.config_changed);
             (self.log)(&format!("{}：{}", outcome.name, outcome.detail));
+            if outcome.status.is_retryable() {
+                report.retry.push(index);
+            }
             report.outcomes.push(outcome);
         }
 
@@ -335,6 +365,131 @@ mod tests {
 
         assert_eq!(report.outcomes[0].status, SignStatus::Skip);
         assert_eq!(report.exit_code(), 1);
+    }
+
+    /// 签到接口直接 500 的站点（用来造 Error）。
+    fn failing_punch_site(server: &MockServer) -> Site {
+        server.mock(|when, then| {
+            when.method(GET).path("/student/my");
+            then.status(200).body(MY);
+        });
+        server.mock(|when, then| {
+            when.method(GET).path("/student");
+            then.status(200).body(CLASS);
+        });
+        server.mock(|when, then| {
+            when.method(GET).path("/student/course/2000001/punchs");
+            then.status(200).body(LIST);
+        });
+        server.mock(|when, then| {
+            when.method(POST).path("/student/punchs/course/2000001/88213");
+            then.status(500).body("server error");
+        });
+        Site::new(server.base_url()).unwrap()
+    }
+
+    /// 一套健康 mock，其中签到接口的 mock 句柄返回出来，方便数提交次数。
+    fn site_with_counted_punch(server: &MockServer) -> (Site, httpmock::Mock<'_>) {
+        server.mock(|when, then| {
+            when.method(GET).path("/student/my");
+            then.status(200).body(MY);
+        });
+        server.mock(|when, then| {
+            when.method(GET).path("/student");
+            then.status(200).body(CLASS);
+        });
+        server.mock(|when, then| {
+            when.method(GET).path("/student/course/2000001/punchs");
+            then.status(200).body(LIST);
+        });
+        let punch = server.mock(|when, then| {
+            when.method(POST).path("/student/punchs/course/2000001/88213");
+            then.status(200).body(POST_OK);
+        });
+        (Site::new(server.base_url()).unwrap(), punch)
+    }
+
+    fn two_students_json() -> &'static str {
+        r#"{"students":[
+            {"name":"张明远","class":"2000001","lat":"39.9","lng":"116.4","acc":"30","cookie":"c"},
+            {"name":"林可欣","class":"2000001","lat":"39.9","lng":"116.4","acc":"30","cookie":"c"}
+        ]}"#
+    }
+
+    #[test]
+    fn 签到接口出错才进重试队列() {
+        let server = MockServer::start();
+        let site = failing_punch_site(&server);
+        let notifier = Notifier::new(server.base_url(), server.base_url()).unwrap();
+        let path = temp_config("retry-error.json", two_students_json());
+
+        let mut runner = Runner::new(&site, &notifier, &path, |_| {});
+        let report = runner.run_once();
+
+        assert_eq!(report.outcomes.len(), 2);
+        assert!(report
+            .outcomes
+            .iter()
+            .all(|outcome| outcome.status == SignStatus::Error));
+        assert_eq!(report.retry, vec![0, 1], "两个账号都出错，都要重试");
+        assert!(report.needs_retry());
+    }
+
+    #[test]
+    fn 跳过不算需要重试() {
+        let server = MockServer::start();
+        // 不 mock /student/my：接口 404 → 拿不到姓名 → Skip
+        let site = Site::new(server.base_url()).unwrap();
+        let notifier = Notifier::new(server.base_url(), server.base_url()).unwrap();
+        // Cookie 失效 → Skip：重试也还是同一个结果，不该占重试次数
+        let path = temp_config(
+            "retry-skip.json",
+            r#"{"students":[{"name":"林可欣","class":"2000001","cookie":"bad"}]}"#,
+        );
+
+        let mut runner = Runner::new(&site, &notifier, &path, |_| {});
+        let report = runner.run_once();
+
+        assert_eq!(report.outcomes[0].status, SignStatus::Skip);
+        assert!(report.retry.is_empty(), "Skip 不该进重试队列");
+        assert!(!report.needs_retry());
+        // 但「给人看」的退出码口径不变：Skip 仍算失败
+        assert_eq!(report.exit_code(), 1);
+    }
+
+    #[test]
+    fn 重试轮只跑指定的账号() {
+        let server = MockServer::start();
+        let (site, punch) = site_with_counted_punch(&server);
+        let notifier = Notifier::new(server.base_url(), server.base_url()).unwrap();
+        let path = temp_config("retry-only.json", two_students_json());
+
+        // 只跑 1 号：不该碰 0 号（提交次数就是证据）
+        let mut runner = Runner::new(&site, &notifier, &path, |_| {}).with_only([1]);
+        let report = runner.run_once();
+
+        assert_eq!(report.outcomes.len(), 1, "只有被点名的账号会被执行");
+        assert_eq!(punch.hits(), 1, "只提交一次");
+    }
+
+    #[test]
+    fn 重试不会把已经签成的账号再提交一遍() {
+        let server = MockServer::start();
+        let (site, punch) = site_with_counted_punch(&server);
+        let notifier = Notifier::new(server.base_url(), server.base_url()).unwrap();
+        let path = temp_config("retry-no-dup.json", two_students_json());
+
+        // 第一轮：两个账号各提交一次
+        let mut runner = Runner::new(&site, &notifier, &path, |_| {});
+        let first = runner.run_once();
+        assert_eq!(punch.hits(), 2);
+        assert!(first.retry.is_empty(), "都成功了就不该重试");
+
+        // 模拟「只有 1 号需要重试」的那一轮
+        let mut runner = Runner::new(&site, &notifier, &path, |_| {}).with_only([1]);
+        let second = runner.run_once();
+        assert_eq!(second.outcomes.len(), 1);
+        assert_eq!(punch.hits(), 3, "重试只该多提交一次，不能再签 0 号");
     }
 
     #[test]

@@ -63,6 +63,16 @@ impl SignStatus {
         matches!(self, SignStatus::Skip | SignStatus::Error)
     }
 
+    /// 值不值得重试。
+    ///
+    /// 只有 `Error`（网络/接口真出错）会重试：
+    /// - `Success` / `AlreadySigned`：已经签上了，再签就是重复提交；
+    /// - `Skip`：Cookie 失效或没班级，重试一百次也是同样结果；
+    /// - `NotStarted` / `NoSignIn`：不是错误，下个时间点自然会再看。
+    pub fn is_retryable(self) -> bool {
+        matches!(self, SignStatus::Error)
+    }
+
     /// 汇总通知里算作成功的状态（已签到也算成功）。
     pub fn is_ok_for_summary(self) -> bool {
         matches!(self, SignStatus::Success | SignStatus::AlreadySigned)

@@ -95,6 +95,11 @@ impl Runtime {
                     let site = Arc::new(site);
                     let notifier = Arc::new(notifier);
 
+                    // 本轮重试队列：`Some(下标)` = 只重跑这些账号。
+                    // 跨 attempt 保留（这样重试只碰失败的账号，不会把已签成的再签一遍）；
+                    // 每轮的第 1 次 attempt 与「立即签到」都会把它清空。
+                    let retry_queue: Arc<Mutex<Option<Vec<usize>>>> = Arc::new(Mutex::new(None));
+
                     let mut scheduler = Scheduler::new(Hooks {
                         run: {
                             let shared = shared.clone();
@@ -103,6 +108,7 @@ impl Runtime {
                             let config_path = config_path.clone();
                             let paused = paused.clone();
                             let paused_accounts = paused_accounts.clone();
+                            let retry_queue = retry_queue.clone();
                             move || {
                                 if paused.load(Ordering::Relaxed) {
                                     push(&shared, LogKind::Info, "已暂停全部，跳过本次执行");
@@ -112,7 +118,22 @@ impl Runtime {
                                     .lock()
                                     .map(|guard| guard.clone())
                                     .unwrap_or_default();
-                                execute_round(&shared, &site, &notifier, &config_path, &skip)
+                                let mut queue = retry_queue
+                                    .lock()
+                                    .map(|mut guard| guard.take())
+                                    .unwrap_or(None);
+                                let code = execute_round(
+                                    &shared,
+                                    &site,
+                                    &notifier,
+                                    &config_path,
+                                    &skip,
+                                    &mut queue,
+                                );
+                                if let Ok(mut guard) = retry_queue.lock() {
+                                    *guard = queue;
+                                }
+                                code
                             }
                         },
                         times: {
@@ -151,12 +172,15 @@ impl Runtime {
                                             .lock()
                                             .map(|guard| guard.clone())
                                             .unwrap_or_default();
+                                        // 手动触发算全新一轮：不受上一轮的失败账号限制
+                                        let mut queue = None;
                                         execute_round(
                                             &shared,
                                             &site,
                                             &notifier,
                                             &config_path,
                                             &skip,
+                                            &mut queue,
                                         );
                                     }
                                 }
@@ -165,6 +189,7 @@ impl Runtime {
                         },
                         on_event: {
                             let shared = shared.clone();
+                            let retry_queue = retry_queue.clone();
                             move |event: Event| {
                                 let mut guard = match shared.lock() {
                                     Ok(guard) => guard,
@@ -176,6 +201,13 @@ impl Runtime {
                                         guard.running = true;
                                     }
                                     Event::RunStart { attempt, total } => {
+                                        if attempt == 1 {
+                                            // 新的一轮：重试队列作废，否则会把上一轮
+                                            // 没跑完的失败账号当成「本轮全部」而漏签别人
+                                            if let Ok(mut queue) = retry_queue.lock() {
+                                                *queue = None;
+                                            }
+                                        }
                                         if attempt > 1 {
                                             guard.pending.push((
                                                 LogKind::Warn,
@@ -359,14 +391,28 @@ fn execute_round(
     notifier: &Notifier,
     config_path: &std::path::Path,
     skip: &std::collections::BTreeSet<usize>,
+    only: &mut Option<Vec<usize>>,
 ) -> i32 {
-    push(shared, LogKind::Info, "开始执行一轮签到");
+    let retrying = only.is_some();
+    push(
+        shared,
+        LogKind::Info,
+        if retrying {
+            "开始重试上一轮失败的账号"
+        } else {
+            "开始执行一轮签到"
+        },
+    );
     let mut lines = Vec::new();
     let report = {
         let mut runner = Runner::new(site, notifier, config_path, |line: &str| {
             lines.push(line.to_string())
         })
         .with_skip(skip.iter().copied());
+        // 重试轮只跑失败的账号：已签成的不再提交第二次
+        if let Some(list) = only.clone() {
+            runner = runner.with_only(list);
+        }
         runner.run_once()
     };
     for line in lines {
@@ -380,20 +426,51 @@ fn execute_round(
         };
         push(shared, kind, format!("{}：{}", outcome.name, outcome.detail));
     }
-    let code = report.exit_code();
+    // 给人看的成败：沿用原来的口径（Skip/Error 都算失败）
+    let ui_code = report.exit_code();
     if let Ok(mut guard) = shared.lock() {
-        guard.last_exit = Some(code);
+        guard.last_exit = Some(ui_code);
     }
+    // 给调度器的信号：只有「还有账号值得重试」才让它再来一轮。
+    // 这样 Cookie 失效（Skip）不会白白重试 6 次，已签成的账号也不会被重复提交。
+    *only = if report.retry.is_empty() {
+        None
+    } else {
+        Some(report.retry.clone())
+    };
+
+    if report.needs_retry() {
+        push(
+            shared,
+            LogKind::Warn,
+            format!(
+                "{} 个账号需要重试：{}",
+                report.retry.len(),
+                report
+                    .outcomes
+                    .iter()
+                    .filter(|outcome| outcome.status.is_retryable())
+                    .map(|outcome| outcome.name.clone())
+                    .collect::<Vec<_>>()
+                    .join("、")
+            ),
+        );
+    }
+
     push(
         shared,
-        if code == 0 { LogKind::Ok } else { LogKind::Bad },
-        if code == 0 {
+        if ui_code == 0 { LogKind::Ok } else { LogKind::Bad },
+        if ui_code == 0 {
             "本轮执行完成".to_string()
         } else {
             "本轮执行失败，可按 Ctrl+Enter 重试".to_string()
         },
     );
-    code
+    if report.needs_retry() {
+        1
+    } else {
+        0
+    }
 }
 
 fn push(shared: &SharedHandle, kind: LogKind, text: impl Into<String>) {
