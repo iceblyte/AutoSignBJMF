@@ -87,9 +87,32 @@ GPUI 单进程就能同时满足「开窗 55 MB」「关窗后不掉到几百兆
 代价（需要在正式开发前认下来）：
 
 1. **还原度约 95%，不是 100%**：设计稿里 10.5–11.5px 的辅助文字在 GPUI 上要提到 12–13px，密度会略松。
-2. **没有现成组件库**：`gpui-kit` 给的是基础件，表格、抽屉、状态 pill 仍要自己写（工作量真实存在）。
+2. **组件库够用，但有边界**：`gpui-kit` 0.9 自带 75+ 组件，按钮/输入框/下拉/对话框/
+   Switch/分页签/滚动容器都已经直接在用（见下方「组件库用法」）。仍然要自己写的：
+   状态 pill、时间点胶囊、日志面板、账号行这类业务展示件；另外**自绘标题栏不能换成
+   库的 `TitleBar`** —— 它在 Windows 上靠 `Window::start_window_move()` 拖动，而这个
+   平台层是空实现（`gpui-pre` 的 default impl），拖不动。
 3. **gpui 本体 pre-1.0**，靠 `gpui-kit` 锁定版本，升级要跟着它走。
 4. release 构建必须能拿到 `fxc.exe`（见上一节），CI 要装 SDK。
+
+## 组件库用法（gpui-kit 0.9）
+
+界面里凡是「能对上库里组件」的，一律走库，不再手画：
+
+| 场景 | 用的组件 | 备注 |
+|---|---|---|
+| 按钮 | `component::button::Button` | 变体 Default→secondary / Primary / Ghost / Danger；尺寸 medium/small/xsmall。`widgets::button` 只是一层 30 行的构建器适配（库的 Button 是 `RenderOnce`，不能 `.id()` 后再 `.on_click()`） |
+| 文本输入 | `component::input::{Input, InputState}` | 光标/选区/撤销/粘贴/中文输入法都由库负责；`InputEvent::Change` 写回草稿，`set_value` 反向灌值 |
+| 下拉 | `component::select::{Select, SelectState}` | 弹出层挂在 Root 上，自动限高/翻转/点外面收起。宽度要套一层定宽盒子（内部是 `size_full()`） |
+| 弹窗 | `component::dialog` + `WindowExt::open_dialog` | 三个弹窗（密钥/时间/扫码）都改用它；builder 可能重跑，持久实体要在外面建 |
+| 开关 / 分页签 / 图标 / 滚动 | `component::{switch, tab, Icon, scroll}` | 原本就在用 |
+
+自己写的原因要写清楚（避免以后又回去重复造）：
+- **窗口标题栏**：库的 `TitleBar` 用 `start_window_move`（Windows 空实现）+ `window_control_area`
+  （WM_NCHITTEST 依赖上一帧 hit test，会抖），所以自己跟光标 `SetWindowPos`。
+- **设置页骨架**：库的 `SettingItem` 只接受实现了 `AnySettingField` 的控件，
+  我们的行里混着按钮组/路径文本，套进去要额外实现 trait，收益不抵成本。
+- **状态 pill / 时间胶囊 / 日志面板 / 账号行**：库没有语义对得上的组件。
 
 ## 两个 spike 目录
 
