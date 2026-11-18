@@ -1,17 +1,20 @@
-//! 设置窗口（屏 04 / 05）：860×560，左侧四项导航。
+//! 设置窗口（屏 04 / 05）：860×560，左侧三项导航 + 右侧内容。
 //!
-//! 画成主窗口之上的覆盖层（`Overlay::Settings`），不另开系统窗口：
-//! 双窗口要额外处理焦点与 z-order，收益只有「设置能拖动」这一点。
+//! 是**独立窗口**（不是覆盖层），并且和主窗口用同一套外观实现：
+//! 客户端装饰 + 自绘标题栏（logo / 标题 / — ✕）+ 跟光标拖动 + Esc 关闭。
+//! 两个窗口共用同一个 `AppView` 实体，所以主题、账号、日志都是实时同步的；
+//! 窗口归属靠 `main_window_id` 区分（同一个 render 里分流）。
 
 use gpui_kit::base::StyledExt;
 use gpui_kit::prelude::*;
+use gpui_kit::{img, MouseButton, MouseMoveEvent, KeyDownEvent};
 use gpui_kit::component::switch::Switch;
 use gpui_kit::component::tab::{Tab, TabBar};
 use gpui_kit::component::{Icon, IconName};
 use gpui_kit::{div, px, rgb, AnyElement, App, Context, Div, Hsla};
 
 use crate::theme::*;
-use crate::ui::main_view::{AppView, SettingsTab};
+use crate::ui::main_view::{window_button, AppView, SettingsTab, WindowButton};
 use crate::ui::widgets::*;
 
 pub fn render(view: &mut AppView, p: &Palette, cx: &mut Context<AppView>) -> AnyElement {
@@ -101,14 +104,73 @@ pub fn render(view: &mut AppView, p: &Palette, cx: &mut Context<AppView>) -> Any
                 ),
         );
 
-    // 独立窗口：铺满整窗，不再画遮罩与自绘标题栏
-    // （自绘标题栏挡不住拖动，圆角在系统窗口里也多余）
+    // 与主窗口同一套自绘标题栏：设置窗口也不再要系统标题栏
+    let titlebar = div()
+        .h(px(TITLEBAR_H))
+        .flex_none()
+        .w_full()
+        .flex()
+        .items_center()
+        .bg(rgb(p.surface_2))
+        .border_b_1()
+        .border_color(rgb(p.line))
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .h_full()
+                .flex_1()
+                .min_w_0()
+                .pl(px(12.0))
+                .pr(px(8.0))
+                .gap(px(8.0))
+                .cursor_pointer()
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(|this, _, window, cx| {
+                        this.window_drag = crate::system::win::begin_window_drag(window);
+                        cx.notify();
+                    }),
+                )
+                .child(img("logo-64.png").w(px(20.0)).h(px(20.0)))
+                .child(
+                    div()
+                        .text_size(px(12.0))
+                        .text_color(rgb(p.text_2))
+                        .child("设置"),
+                ),
+        )
+        // 按钮不落在拖拽区里，否则按不到
+        .child(window_button(WindowButton::Min, p, cx))
+        .child(window_button(WindowButton::Close, p, cx));
+
     div()
         .size_full()
         .flex()
+        .flex_col()
+        .track_focus(&view.settings_focus)
         .bg(rgb(p.surface))
-        .child(nav)
-        .child(body)
+        // 拖动跟随 / 松开结束 / Esc 关闭 —— 与主窗口保持一致
+        .on_mouse_move(cx.listener(|this, _: &MouseMoveEvent, window, _| {
+            if let Some(offset) = this.window_drag {
+                crate::system::win::drag_window_to(window, offset);
+            }
+        }))
+        .on_mouse_up(
+            MouseButton::Left,
+            cx.listener(|this, _, _, cx| {
+                if this.window_drag.take().is_some() {
+                    cx.notify();
+                }
+            }),
+        )
+        .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+            if event.keystroke.key.as_str() == "escape" {
+                this.close_settings(window, cx);
+            }
+        }))
+        .child(titlebar)
+        .child(div().flex_1().min_h_0().flex().child(nav).child(body))
         .into_any_element()
 }
 

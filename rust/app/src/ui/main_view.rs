@@ -88,6 +88,10 @@ pub struct AppView {
     pub qq_input: Entity<InputState>,
     /// 上一次同步到输入框的草稿版本号
     inputs_synced: Option<u64>,
+    /// 两个窗口各自的「空白处焦点」：没有它，Esc 这类窗口级快捷键
+    /// 在没点过任何控件之前收不到（按键只会派给有焦点的那条链）。
+    pub(crate) root_focus: FocusHandle,
+    pub(crate) settings_focus: FocusHandle,
     /// 日志区的滚动位置（日志多了要能翻）
     pub log_scroll: ScrollHandle,
     /// 上一次渲染时看到的日志版本号：变了就把日志区贴底。
@@ -306,6 +310,9 @@ impl AppView {
             .detach();
         }
 
+        let root_focus = cx.focus_handle();
+        let settings_focus = cx.focus_handle();
+
         // ---- 文本输入：组件库的 Input + InputState ----
         // 编辑、光标、选区、粘贴、中文输入法都由库负责，我们只管「值变了写回草稿」。
         let draft = state.draft.clone();
@@ -411,6 +418,8 @@ impl AppView {
             wx_input,
             qq_input,
             inputs_synced: None,
+            root_focus,
+            settings_focus,
             add_time: String::new(),
             error: None,
             settings_tab: SettingsTab::General,
@@ -434,6 +443,9 @@ impl AppView {
             close_hint_muted: false,
             close_signal: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         };
+
+        // 让主窗口的根节点拿到初始焦点：这样 Esc / Ctrl+Enter 在「还没点过任何控件」时也能用
+        window.focus(&view.root_focus, cx);
 
         // 截图/QA：弹窗必须等窗口自己的 Root 装好才能开
         // （open_dialog 依赖窗口级的组件状态，在视图构造期间调用会 panic），
@@ -828,9 +840,11 @@ impl AppView {
                 origin: point(px(260.0), px(180.0)),
                 size: size(px(SETTINGS_W), px(SETTINGS_H)),
             })),
+            // 与主窗口同一套：不要系统标题栏，标题栏由我们自己画
+            window_decorations: Some(gpui_kit::WindowDecorations::Client),
             titlebar: Some(TitlebarOptions {
                 title: Some("设置".into()),
-                appears_transparent: false,
+                appears_transparent: true,
                 traffic_light_position: None,
             }),
             window_min_size: Some(size(px(720.0), px(460.0))),
@@ -880,12 +894,15 @@ impl AppView {
             match &opened {
                 Ok(handle) => {
                     let id = handle.window_id();
+                    // 让设置窗口的根节点拿初始焦点（Esc 关闭要靠它）
+                    let focus = this
+                        .update(cx, |view, _| view.settings_focus.clone())
+                        .ok();
+                    if let Some(focus) = focus {
+                        let _ = handle.update(cx, |_, window, cx| window.focus(&focus, cx));
+                    }
                     crate::ui_debug("open_settings: created ok");
-                    // 新窗口拿到的是系统默认标题栏；深色主题下要立刻刷成深色
-                    let dark = this.update(cx, |view, _| view.dark).unwrap_or(false);
-                    let _ = handle.update(cx, |_, window, _| {
-                        crate::system::win::set_dark_titlebar(window, dark);
-                    });
+                    // 设置窗口现在也是客户端装饰（标题栏自绘），不用再刷 DWM 深色标题栏
                     let _ = this.update(cx, |view, cx| {
                         view.settings_window = Some(id);
                         view.settings_opening = false;
@@ -2423,7 +2440,7 @@ pub enum WindowButton {
 /// 之前用 `window_control_area`，那是把命中判定交给系统的 WM_NCHITTEST ——
 /// 鼠标在标题栏移动时系统会不停地问「这点是什么区域」，叠上 hover 重绘就明显卡顿
 /// （设置窗口用的是系统标题栏，所以没事）。改成普通点击 + 显式 API。
-fn window_button(kind: WindowButton, p: &Palette, cx: &mut Context<AppView>) -> AnyElement {
+pub(crate) fn window_button(kind: WindowButton, p: &Palette, cx: &mut Context<AppView>) -> AnyElement {
     let (glyph, danger) = match kind {
         WindowButton::Min => ("─", false),
         WindowButton::Close => ("✕", true),
@@ -2454,7 +2471,14 @@ fn window_button(kind: WindowButton, p: &Palette, cx: &mut Context<AppView>) -> 
             WindowButton::Min => window.minimize_window(),
             // 关闭 = 交给「最小化到托盘 / 直接退出」那条路，但**立刻**执行：
             // 原来是置一个标志、等下一次 tick（最长 1 秒）才隐藏，手感就是「点了没反应」。
-            WindowButton::Close => this.request_close(window, cx),
+            // 设置窗口是同一套标题栏，关闭要收自己（隐藏），不能把主窗口收进托盘。
+            WindowButton::Close => {
+                if this.main_window_id == Some(window.window_handle().window_id()) {
+                    this.request_close(window, cx);
+                } else {
+                    this.close_settings(window, cx);
+                }
+            }
         }))
         .child(glyph)
         .into_any_element()
@@ -2707,6 +2731,7 @@ impl Render for AppView {
         let mut root = div()
             .v_flex()
             .size_full()
+            .track_focus(&self.root_focus)
             .bg(rgb(p.desk))
             .text_size(px(13.0))
             .text_color(rgb(p.text))
@@ -2723,9 +2748,9 @@ impl Render for AppView {
                 }
             }))
             // 拖动标题栏后，光标一动就把窗口跟过去；松开结束
-            .on_mouse_move(cx.listener(|this, _: &MouseMoveEvent, _, _| {
+            .on_mouse_move(cx.listener(|this, _: &MouseMoveEvent, window, _| {
                 if let Some(offset) = this.window_drag {
-                    crate::system::win::drag_window_to(offset);
+                    crate::system::win::drag_window_to(window, offset);
                 }
             }))
             .on_mouse_up(

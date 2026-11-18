@@ -475,11 +475,12 @@ pub fn begin_window_drag(window: &gpui_kit::Window) -> Option<(f32, f32)> {
 }
 
 /// 把主窗口挪到「光标 - 偏移」的位置（拖动中的每一帧调用）。
-pub fn drag_window_to(offset: (f32, f32)) {
+pub fn drag_window_to(window: &gpui_kit::Window, offset: (f32, f32)) {
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         SetWindowPos, SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER,
     };
-    let Some(hwnd) = main_window() else {
+    // 用「当前这个窗口」的 HWND，不是缓存的主窗口：设置窗口也是自绘标题栏
+    let Some(hwnd) = window_hwnd_of(window) else {
         return;
     };
     unsafe {
