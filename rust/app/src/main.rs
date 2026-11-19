@@ -8,6 +8,7 @@
 )]
 
 mod assets;
+mod boot;
 
 /// 界面侧诊断日志：写到临时目录，release（无控制台）也能事后查。
 pub fn ui_debug(message: &str) {
@@ -74,6 +75,9 @@ fn main() {
         format!("程序启动，共 {} 个账号", state.config.students.len()),
     );
 
+    // 老版本的自启动项只有裸路径（没有 --tray），升级后顺手改写成托盘模式
+    system::autostart::refresh_command();
+
     // 后台：调度线程 + 托盘
     let runtime = Arc::new(Runtime::start(
         config_path,
@@ -81,49 +85,26 @@ fn main() {
         state.settings.autostart,
     ));
 
-    let options = WindowOptions {
-        window_bounds: Some(WindowBounds::Windowed(Bounds {
-            origin: point(px(120.0), px(80.0)),
-            size: size(px(theme::WINDOW_W), px(theme::WINDOW_H)),
-        })),
-        // 客户端装饰：不要系统标题栏，整条标题栏由我们自己画
-        // （否则深色模式下系统会盖一层浅色背景，怎么调 DWM 都不对）
-        window_decorations: Some(gpui_kit::WindowDecorations::Client),
-        titlebar: Some(TitlebarOptions {
-            // 标题仍要有：任务栏与截图工具都靠它认窗口（客户端装饰下不会画出来）
-            title: Some(WINDOW_TITLE.into()),
-            appears_transparent: true,
-            traffic_light_position: None,
-        }),
-        // 最小宽度要 ≤ 半屏，否则「拖到屏幕左/右边缘分屏」会被系统判成放不下、
-        // 直接钳到最小尺寸（1920 屏半屏是 960，所以这里给 860；1366 的笔记本半屏
-        // 只有 683，分屏仍会被钳 —— 再窄排版就散了，不追这个）。
-        window_min_size: Some(size(px(860.0), px(560.0))),
-        ..Default::default()
-    };
+    // 开机自启（注册表里带 --tray）或显式要求：不建窗口，只跑托盘 + 调度。
+    // 这样开机那一刻不会初始化 D3D，第一次点托盘才建窗。
+    let tray_only = std::env::var_os("AUTOSIGN_TRAY_ONLY").is_some()
+        || std::env::args().any(|arg| arg == "--tray" || arg == "--silent");
 
-    application().with_assets(Assets).run(move |cx| {
+    let mut app = application().with_assets(Assets);
+    if tray_only {
+        // headless 起步：平台不 attach GPU（设备 / 图集 / 交换链一个都不占）
+        app = app.with_windowing(gpui_kit::WindowingRequest::Headless);
+    }
+
+    app.run(move |cx| {
         gpui_kit::init(cx);
-        let handle = open_window(options, cx, move |window, cx| {
-            // 同一个 entity 会被两个窗口渲染（主窗口 / 设置窗口），
-            // 记下主窗口的 id，界面靠它决定画哪一套
-            let main_window_id = window.window_handle().window_id();
-            cx.new(|cx| {
-                let mut view = AppView::new(state, runtime.clone(), main_window_id, window, cx);
-                view.start_ticker(cx);
-                view
-            })
-        })
-        .expect("打开主窗口失败");
+        // 托盘模式下启动时一个窗口都没有，gpui 默认会当成"该退出了"
+        cx.set_quit_mode(gpui_kit::QuitMode::Explicit);
 
-        // 关窗到托盘：拦下关闭、只提示一次（真正隐藏窗口需要平台层 API，
-        // 这一版先做到「不会因为关窗把调度停掉」）。
-        let signal = handle.1.read(cx).close_signal.clone();
-        let _ = handle.0.update(cx, move |_view, window, cx| {
-            window.on_window_should_close(cx, move |_window, _cx| {
-                signal.store(true, std::sync::atomic::Ordering::SeqCst);
-                false
-            });
-        });
+        if tray_only {
+            boot::tray_only(state, runtime, cx);
+        } else {
+            boot::open_main_window(state, runtime, cx);
+        }
     });
 }

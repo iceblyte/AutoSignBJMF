@@ -310,6 +310,17 @@ impl Runtime {
         self.tray_events.lock().ok().and_then(|mut guard| guard.take())
     }
 
+    /// 把托盘事件通道放回运行时（托盘模式启动时先由启动逻辑临时消费，
+    /// 窗口建好后交回界面继续收）。
+    pub fn restore_tray_events(
+        &self,
+        receiver: async_channel::Receiver<crate::system::tray::TrayCommand>,
+    ) {
+        if let Ok(mut guard) = self.tray_events.lock() {
+            *guard = Some(receiver);
+        }
+    }
+
     /// 往托盘事件通道里塞一条命令（QA 用来模拟点击托盘菜单）。
     pub fn send_tray_command(&self, command: crate::system::tray::TrayCommand) -> bool {
         self.tray_commands.try_send(command).is_ok()

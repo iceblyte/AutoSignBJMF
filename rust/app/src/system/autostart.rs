@@ -20,10 +20,23 @@ fn wide(text: &str) -> Vec<u16> {
         .collect()
 }
 
-/// 写进注册表的启动命令：带引号的完整 exe 路径。
+/// 写进注册表的启动命令：带引号的完整 exe 路径 + `--tray`。
+///
+/// `--tray` 让开机自启走「托盘模式」：启动时不建窗口、不初始化 D3D，
+/// 第一次点托盘才建窗。手动双击（没有这个参数）则照旧直接开窗。
 pub fn launch_command() -> String {
     let exe = std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("AutoSignBJMF.exe"));
-    format!("\"{}\"", exe.display())
+    format!("\"{}\" --tray", exe.display())
+}
+
+/// 自愈：开机自启已经开着，就把启动命令按当前格式重写一遍。
+///
+/// 老版本写的是不带 `--tray` 的裸路径，升级后不会自动变成托盘模式；
+/// 每次启动顺手刷一遍，用户不用去手动关一次再开。
+pub fn refresh_command() {
+    if is_enabled() {
+        let _ = set_enabled(true);
+    }
 }
 
 /// 开启 / 关闭开机自启；返回是否成功。
@@ -98,10 +111,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn 启动命令带引号且指向_exe() {
+    fn 启动命令带引号指向_exe且带托盘参数() {
         let command = launch_command();
-        assert!(command.starts_with('"') && command.ends_with('"'));
+        assert!(command.starts_with('"'));
         assert!(command.to_lowercase().contains(".exe"));
+        // 开机自启走托盘模式：不建窗口、不初始化 D3D
+        assert!(command.ends_with("\" --tray"), "实际是 {command}");
     }
 
     #[test]

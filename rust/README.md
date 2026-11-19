@@ -55,6 +55,7 @@ CI 上的做法是装 Windows SDK（`choco install windows-sdk-10.0` 或 msbuild
 | 进程数 | **1** |
 | 开窗内存 | 私有工作集 **12.7 MB**（任务管理器「内存」列）/ 总工作集 51.4 MB / 提交 83.9 MB |
 | 隐藏到托盘后 | 私有工作集 **1.9 MB** / 总工作集 5.1 MB（`EmptyWorkingSet` + 内存优先级降到最低） |
+| 开机自启（托盘模式，完全没有窗口） | 提交 **8.6 MB** / 工作集 25 MB —— 不初始化 D3D，第一次点托盘才建窗 |
 | 隐藏后 CPU | **0.08 s / 30 s**（约 0.3% 单核；隐藏时不再每秒重绘） |
 | 启动到窗口可见 | **486 ms**（3 次中位数） |
 | release 体积 | **10.27 MB**（`lto=true, codegen-units=1, opt-level=s, strip`） |
@@ -62,6 +63,12 @@ CI 上的做法是装 Windows SDK（`choco install windows-sdk-10.0` 或 msbuild
 | debug 构建耗时 | 首次全量约 25 秒（增量 5~10 秒） |
 | 运行时依赖 | **全部是系统 DLL**（kernel32/d3d11/dwrite/dcomp/icuuc…），无 VC++ 运行库、无 MinGW 动态库，单文件即可分发 |
 
+> 开机自启走「托盘模式」：注册表里写的是 `"exe" --tray`，启动时把平台切到
+> `WindowingRequest::Headless`（不 `attach_gpu`），所以一个窗口、一份 D3D 设备都不占；
+> 第一次点托盘「打开」时才 `request_windowing(Windowed)` + `open_window`。
+> 前提是 `QuitMode::Explicit`，否则没有窗口 gpui 会当成"该退出了"。
+> 手动双击（没有 `--tray`）行为不变，直接开窗。
+>
 > 口径说明：Windows 上「占多大内存」看两个数——任务管理器的「内存」列是**私有工作集**，
 > 资源监视器的「提交」是进程提交量。托盘常驻应用真正影响别人的是前者；提交量主要是
 > D3D11 设备 + 字形图集（窗口存在期间不释放）。
