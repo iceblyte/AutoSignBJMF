@@ -5,7 +5,7 @@
 
 use std::ffi::c_void;
 
-use windows_sys::Win32::Foundation::RECT;
+use windows_sys::Win32::Foundation::{BOOL, HWND, LPARAM, LRESULT, RECT, WPARAM};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     EnumWindows, FindWindowW, GetCursorPos, GetForegroundWindow, GetWindow, GetWindowRect,
     GetWindowThreadProcessId,
@@ -14,6 +14,12 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     SW_SHOWMAXIMIZED,
 };
 use windows_sys::Win32::Foundation::POINT;
+use windows_sys::Win32::UI::HiDpi::GetDpiForWindow;
+use windows_sys::Win32::Graphics::Gdi::ScreenToClient;
+use windows_sys::Win32::UI::WindowsAndMessaging::{
+    GetClientRect, HTBOTTOM, HTBOTTOMLEFT, HTBOTTOMRIGHT, HTCAPTION, HTCLIENT, HTLEFT, HTRIGHT,
+    HTTOP, HTTOPLEFT, HTTOPRIGHT, WM_NCHITTEST,
+};
 
 /// 转成 Windows 需要的以 0 结尾的 UTF-16。
 fn wide(text: &str) -> Vec<u16> {
@@ -506,38 +512,7 @@ pub fn main_window_bounds() -> Option<WindowBounds> {
     })
 }
 
-/// 开始拖动窗口：返回「光标相对窗口左上角」的偏移。
-///
-/// 为什么不交给系统（`window_control_area(Drag)` / `start_window_move`）：
-/// - `start_window_move` 在 Windows 后端是空实现（只有 Wayland/X11 有）；
-/// - `window_control_area` 靠 WM_NCHITTEST，而 gpui 的命中判定用的是
-///   「上一帧算好的 mouse_hit_test」，鼠标刚移到标题栏、还没画新帧时
-///   系统问「这是不是标题栏」，答案永远是 HTCLIENT —— 于是按下去拖不动。
-///   （实测：把光标停在标题栏两秒再 SendMessage(WM_NCHITTEST) 仍返回 1。）
-/// 所以自己跟着光标挪窗口，逻辑简单且不受帧时序影响。
-pub fn begin_window_drag(window: &gpui_kit::Window) -> Option<(f32, f32)> {
-    let hwnd = window_hwnd_of(window)?;
-    unsafe {
-        let mut point: POINT = std::mem::zeroed();
-        if GetCursorPos(&mut point) == 0 {
-            return None;
-        }
-        // 最大化时不让自绘标题栏拖动（拖动语义是「还原」，系统那套更顺手）
-        if IsZoomed(hwnd) != 0 {
-            return None;
-        }
-        let mut rect: RECT = std::mem::zeroed();
-        if GetWindowRect(hwnd, &mut rect) == 0 {
-            return None;
-        }
-        Some((
-            (point.x - rect.left) as f32,
-            (point.y - rect.top) as f32,
-        ))
-    }
-}
 
-/// 把主窗口挪到「光标 - 偏移」的位置（拖动中的每一帧调用）。
 pub fn drag_window_to(window: &gpui_kit::Window, offset: (f32, f32)) {
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         SetWindowPos, SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER,
@@ -594,5 +569,140 @@ mod tests {
         assert!(!activate_window_by_title(
             "__AutoSignBJMF_不存在的窗口标题__"
         ));
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 自绘标题栏 + 系统边框：把 WM_NCHITTEST 接管回来
+// ---------------------------------------------------------------------------
+//
+// 为什么需要：
+// - gpui 在「客户端装饰」下只把**顶边**做成可拉伸（`handle_hit_test_msg` 里只有
+//   HTTOP / HTTOPLEFT / HTTOPRIGHT），左右和下边只剩 DefWindowProc 的 1px，
+//   实际用起来就是「边拉不动、很难抓住」；
+// - 拖动 / 双击最大化 / Aero Snap / 标题栏右键系统菜单，系统只认 WM_NCHITTEST
+//   返回的 HTCAPTION。gpui 的 `window_control_area` 依赖上一帧 hit test（不可用），
+//   所以我们以前自己跟光标 SetWindowPos —— 代价就是上面那串系统行为全丢了。
+//
+// 做法：给 HWND 挂一个子类过程，在 WM_NCHITTEST 里回答两件事：
+//   1) 四周 6 DIP 的条带 → HTLEFT/HTRIGHT/HTTOP/HTBOTTOM/四个角（拉伸，光标也会变）；
+//   2) 标题栏条带（扣掉右边两个按钮）→ HTCAPTION（拖动 + 双击最大化 + snap + 系统菜单）。
+// 其余一律 HTCLIENT，交回 gpui 正常处理（按钮、输入框都走这条）。
+
+/// comctl32 的子类化函数：windows-sys 没导出，自己声明（标准做法）。
+type SubclassProc =
+    Option<unsafe extern "system" fn(HWND, u32, WPARAM, LPARAM, usize, usize) -> LRESULT>;
+
+#[link(name = "comctl32")]
+extern "system" {
+    fn SetWindowSubclass(
+        hwnd: HWND,
+        pfn_subclass: SubclassProc,
+        id_subclass: usize,
+        ref_data: usize,
+    ) -> BOOL;
+    fn DefSubclassProc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT;
+}
+
+/// 子类 id：一个窗口只挂一次。
+const FRAME_SUBCLASS_ID: usize = 0x8A11;
+/// 边框抓取带宽（DIP）。
+const RESIZE_BAND_DIP: f32 = 6.0;
+
+unsafe extern "system" fn frame_subclass(
+    hwnd: HWND,
+    msg: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+    _id: usize,
+    _data: usize,
+) -> LRESULT {
+    if msg == WM_NCHITTEST {
+        let hit = frame_hit_test(hwnd, lparam);
+        if hit != HTCLIENT as isize {
+            return hit;
+        }
+    }
+    DefSubclassProc(hwnd, msg, wparam, lparam)
+}
+
+/// 命中判定：先边框，再标题栏，最后交回客户端。
+unsafe fn frame_hit_test(hwnd: HWND, lparam: LPARAM) -> isize {
+    let mut point = POINT {
+        x: (lparam & 0xffff) as u16 as i16 as i32,
+        y: ((lparam >> 16) & 0xffff) as u16 as i16 as i32,
+    };
+    ScreenToClient(hwnd, &mut point);
+
+    let mut client: RECT = std::mem::zeroed();
+    if GetClientRect(hwnd, &mut client) == 0 {
+        return HTCLIENT as isize;
+    }
+
+    let scale = (GetDpiForWindow(hwnd) as f32 / 96.0).max(1.0);
+    let band = (RESIZE_BAND_DIP * scale).round() as i32;
+
+    // 最大化时不要边框（那一圈贴着屏幕边），但标题栏仍要能拖 / 双击还原
+    if IsZoomed(hwnd) == 0 {
+        let left = point.x < band;
+        let right = point.x >= client.right - band;
+        let top = point.y < band;
+        let bottom = point.y >= client.bottom - band;
+        let edge = match (left, right, top, bottom) {
+            (true, _, true, _) => HTTOPLEFT,
+            (_, true, true, _) => HTTOPRIGHT,
+            (true, _, _, true) => HTBOTTOMLEFT,
+            (_, true, _, true) => HTBOTTOMRIGHT,
+            (true, ..) => HTLEFT,
+            (_, true, ..) => HTRIGHT,
+            (_, _, true, _) => HTTOP,
+            (_, _, _, true) => HTBOTTOM,
+            _ => 0,
+        };
+        if edge != 0 {
+            return edge as isize;
+        }
+    }
+
+    // 标题栏条带：右边两个窗口按钮留给 gpui 点，其余算标题栏
+    let title_h = (crate::theme::TITLEBAR_H * scale).round() as i32;
+    let buttons_w = (crate::theme::WINDOW_BTN_W * 2.0 * scale).round() as i32;
+    if point.y < title_h && point.x < client.right - buttons_w {
+        return HTCAPTION as isize;
+    }
+
+    HTCLIENT as isize
+}
+
+/// 给窗口装上「系统接管边框 + 标题栏」的子类过程。主窗口和设置窗口都要装。
+pub fn install_frame_subclass(window: &gpui_kit::Window) {
+    let Some(hwnd) = window_hwnd_of(window) else {
+        return;
+    };
+    unsafe {
+        let ok = SetWindowSubclass(hwnd, Some(frame_subclass), FRAME_SUBCLASS_ID, 0);
+
+        // gpui 建窗时把 WS_CAPTION 摘掉了（自己画标题栏），但 Windows 的 Aero Snap
+        // 只对「有标题栏的普通窗口」生效 —— 拖到屏幕顶端不最大化就是这个原因。
+        // 把 WS_CAPTION 加回去：客户区尺寸不受影响（gpui 在 WM_NCCALCSIZE 里把
+        // 上边距抹平了），但窗口重新被系统认成「可吸附」。
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            GetWindowLongW, SetWindowLongW, SetWindowPos, GWL_STYLE, SWP_FRAMECHANGED,
+            SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, WS_CAPTION,
+        };
+        let style = GetWindowLongW(hwnd, GWL_STYLE) as u32;
+        if style & WS_CAPTION != WS_CAPTION {
+            SetWindowLongW(hwnd, GWL_STYLE, (style | WS_CAPTION) as i32);
+            SetWindowPos(
+                hwnd,
+                std::ptr::null_mut(),
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED,
+            );
+        }
+        crate::ui_debug(&format!("install_frame_subclass: ok={ok} style_before={style:#x}"));
     }
 }

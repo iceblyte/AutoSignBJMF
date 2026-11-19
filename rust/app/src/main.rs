@@ -95,7 +95,10 @@ fn main() {
             appears_transparent: true,
             traffic_light_position: None,
         }),
-        window_min_size: Some(size(px(980.0), px(640.0))),
+        // 最小宽度要 ≤ 半屏，否则「拖到屏幕左/右边缘分屏」会被系统判成放不下、
+        // 直接钳到最小尺寸（1920 屏半屏是 960，所以这里给 860；1366 的笔记本半屏
+        // 只有 683，分屏仍会被钳 —— 再窄排版就散了，不追这个）。
+        window_min_size: Some(size(px(860.0), px(560.0))),
         ..Default::default()
     };
 

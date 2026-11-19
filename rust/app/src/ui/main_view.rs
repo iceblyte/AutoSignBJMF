@@ -79,8 +79,6 @@ pub struct AppView {
     pub main_window_id: Option<WindowId>,
     /// 主窗口当前是否被藏到了托盘（主题刷新后要恢复原样）。
     pub main_hidden: bool,
-    /// 拖动窗口中的偏移（光标相对窗口左上角），`None` 表示没在拖。
-    pub window_drag: Option<(f32, f32)>,
     /// 纬度 / 经度 / 微信 Key / QQ Key：交给组件库的 Input 管编辑与光标
     pub lat_input: Entity<InputState>,
     pub lng_input: Entity<InputState>,
@@ -437,7 +435,6 @@ impl AppView {
             settings_opening: false,
             main_window_id: Some(main_window_id),
             main_hidden: false,
-            window_drag: None,
             log_scroll: ScrollHandle::new(),
             log_revision_seen: None,
             tick_count: 0,
@@ -451,6 +448,8 @@ impl AppView {
 
         // 让主窗口的根节点拿到初始焦点：这样 Esc / Ctrl+Enter 在「还没点过任何控件」时也能用
         window.focus(&view.root_focus, cx);
+        // 自绘标题栏 + 系统边框：交给系统处理拖动/双击/snap/拉伸
+        crate::system::win::install_frame_subclass(window);
 
         // 截图/QA：弹窗必须等窗口自己的 Root 装好才能开
         // （open_dialog 依赖窗口级的组件状态，在视图构造期间调用会 panic），
@@ -908,7 +907,11 @@ impl AppView {
                         .update(cx, |view, _| view.settings_focus.clone())
                         .ok();
                     if let Some(focus) = focus {
-                        let _ = handle.update(cx, |_, window, cx| window.focus(&focus, cx));
+                        let _ = handle.update(cx, |_, window, cx| {
+                            window.focus(&focus, cx);
+                            // 设置窗口也是自绘标题栏，同样交给系统
+                            crate::system::win::install_frame_subclass(window);
+                        });
                     }
                     crate::ui_debug("open_settings: created ok");
                     // 设置窗口现在也是客户端装饰（标题栏自绘），不用再刷 DWM 深色标题栏
@@ -1342,17 +1345,11 @@ impl AppView {
                     .pl(px(12.0))
                     .pr(px(8.0))
                     .gap(px(8.0))
-                    // 拖动：按下时记住光标相对窗口的偏移，之后跟着光标挪窗口。
-                    // 系统那两套（start_window_move / window_control_area）在
-                    // Windows + 客户端装饰下都不可靠，原因见 win.rs 的注释。
-                    .cursor_pointer()
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(|this, _, window, cx| {
-                            this.window_drag = crate::system::win::begin_window_drag(window);
-                            cx.notify();
-                        }),
-                    )
+                    // 拖动 / 双击最大化 / 拖到边缘吸附全部交给系统：
+                    // win::install_frame_subclass 在 WM_NCHITTEST 里把这条带子
+                    // 报成 HTCAPTION，系统自己跑模态拖动循环。
+                    // （以前自己跟光标 SetWindowPos，鼠标在窗口外松开时收不到
+                    //  mouse_up，window_drag 就永远留着 —— 表现是「一抓住就松不开」。）
                     .child(img("logo-64.png").w(px(20.0)).h(px(20.0)))
                     .child(
                         div()
@@ -2760,20 +2757,6 @@ impl Render for AppView {
                     this.dismiss_or_hide(window, cx);
                 }
             }))
-            // 拖动标题栏后，光标一动就把窗口跟过去；松开结束
-            .on_mouse_move(cx.listener(|this, _: &MouseMoveEvent, window, _| {
-                if let Some(offset) = this.window_drag {
-                    crate::system::win::drag_window_to(window, offset);
-                }
-            }))
-            .on_mouse_up(
-                MouseButton::Left,
-                cx.listener(|this, _, _, cx| {
-                    if this.window_drag.take().is_some() {
-                        cx.notify();
-                    }
-                }),
-            )
             .child(self.render_titlebar(p, cx))
             .child(
                 div()

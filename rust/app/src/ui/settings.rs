@@ -124,14 +124,6 @@ pub fn render(view: &mut AppView, p: &Palette, cx: &mut Context<AppView>) -> Any
                 .pl(px(12.0))
                 .pr(px(8.0))
                 .gap(px(8.0))
-                .cursor_pointer()
-                .on_mouse_down(
-                    MouseButton::Left,
-                    cx.listener(|this, _, window, cx| {
-                        this.window_drag = crate::system::win::begin_window_drag(window);
-                        cx.notify();
-                    }),
-                )
                 .child(img("logo-64.png").w(px(20.0)).h(px(20.0)))
                 .child(
                     div()
@@ -150,20 +142,7 @@ pub fn render(view: &mut AppView, p: &Palette, cx: &mut Context<AppView>) -> Any
         .flex_col()
         .track_focus(&view.settings_focus)
         .bg(rgb(p.surface))
-        // 拖动跟随 / 松开结束 / Esc 关闭 —— 与主窗口保持一致
-        .on_mouse_move(cx.listener(|this, _: &MouseMoveEvent, window, _| {
-            if let Some(offset) = this.window_drag {
-                crate::system::win::drag_window_to(window, offset);
-            }
-        }))
-        .on_mouse_up(
-            MouseButton::Left,
-            cx.listener(|this, _, _, cx| {
-                if this.window_drag.take().is_some() {
-                    cx.notify();
-                }
-            }),
-        )
+        // 拖动/吸附由系统接管（WM_NCHITTEST → HTCAPTION），这里只留 Esc 关闭
         .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
             if event.keystroke.key.as_str() == "escape" {
                 this.close_settings(window, cx);
