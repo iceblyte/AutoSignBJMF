@@ -54,7 +54,8 @@ CI 上的做法是装 Windows SDK（`choco install windows-sdk-10.0` 或 msbuild
 |---|---|
 | 进程数 | **1** |
 | 开窗内存 | 私有工作集 **12.7 MB**（任务管理器「内存」列）/ 总工作集 51.4 MB / 提交 83.9 MB |
-| 隐藏到托盘后 | 私有工作集 **1.9 MB** / 总工作集 5.1 MB（`EmptyWorkingSet` + 内存优先级降到最低） |
+| 关到托盘（窗口销毁 + 切 headless） | 私有工作集 **7.3 MB** / 提交 **12.2 MB**（可见时是 95 MB） |
+| 从托盘再打开 | 按上次的位置/大小重建窗口，提交回到 ~79 MB |
 | 开机自启（托盘模式，完全没有窗口） | 提交 **8.6 MB** / 工作集 25 MB —— 不初始化 D3D，第一次点托盘才建窗 |
 | 隐藏后 CPU | **0.08 s / 30 s**（约 0.3% 单核；隐藏时不再每秒重绘） |
 | 启动到窗口可见 | **486 ms**（3 次中位数） |
@@ -63,6 +64,12 @@ CI 上的做法是装 Windows SDK（`choco install windows-sdk-10.0` 或 msbuild
 | debug 构建耗时 | 首次全量约 25 秒（增量 5~10 秒） |
 | 运行时依赖 | **全部是系统 DLL**（kernel32/d3d11/dwrite/dcomp/icuuc…），无 VC++ 运行库、无 MinGW 动态库，单文件即可分发 |
 
+> 关到托盘 = **销毁窗口**，不是 `ShowWindow(SW_HIDE)`：设备的 80 MB 提交挂在窗口上，
+> 藏着不放不如拆掉重开。销毁前记住 `window_bounds()`（含最大化），托盘「打开」时
+> 先 `request_windowing(Windowed)` 重新 attach GPU、再用同一份 `WindowOptions` 重建。
+> 实体（`AppView`）通过 `boot` 里的一个 thread_local 强引用活着 —— 否则拆窗口时
+> 它是唯一强引用，会被回收，表现是「点托盘没反应」。
+>
 > 开机自启走「托盘模式」：注册表里写的是 `"exe" --tray`，启动时把平台切到
 > `WindowingRequest::Headless`（不 `attach_gpu`），所以一个窗口、一份 D3D 设备都不占；
 > 第一次点托盘「打开」时才 `request_windowing(Windowed)` + `open_window`。

@@ -20,13 +20,38 @@ use crate::theme;
 use crate::ui::AppView;
 use crate::WINDOW_TITLE;
 
+thread_local! {
+    /// `AppView` 的强引用。
+    ///
+    /// 窗口销毁后，window 的 root view 是唯一的强引用 —— 一拆窗口，实体就被回收，
+    /// 托盘命令、tick、日志全都没了（表现：点托盘没反应）。这里留一份，
+    /// 让「窗口没了但应用还在」这条状态成立。
+    static MAIN_VIEW: std::cell::RefCell<Option<Entity<AppView>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// 记住实体（建窗后调用一次；重建窗口时继续沿用同一个）。
+fn remember_view(entity: &Entity<AppView>) {
+    MAIN_VIEW.with(|slot| *slot.borrow_mut() = Some(entity.clone()));
+}
+
+/// 取回实体（没有窗口时也能拿到）。
+fn main_view() -> Option<Entity<AppView>> {
+    MAIN_VIEW.with(|slot| slot.borrow().clone())
+}
+
 /// 主窗口的外观（启动与「从托盘唤起」共用，两边必须一致）。
-fn window_options() -> WindowOptions {
-    WindowOptions {
-        window_bounds: Some(WindowBounds::Windowed(Bounds {
+///
+/// `bounds` 是上次销毁前记住的位置/大小（含最大化）；`None` 用默认的 120,80。
+fn window_options(bounds: Option<WindowBounds>) -> WindowOptions {
+    let bounds = bounds.unwrap_or_else(|| {
+        WindowBounds::Windowed(Bounds {
             origin: point(px(120.0), px(80.0)),
             size: size(px(theme::WINDOW_W), px(theme::WINDOW_H)),
-        })),
+        })
+    });
+    WindowOptions {
+        window_bounds: Some(bounds),
         // 客户端装饰：不要系统标题栏，整条标题栏由我们自己画
         // （否则深色模式下系统会盖一层浅色背景，怎么调 DWM 都不对）
         window_decorations: Some(gpui_kit::WindowDecorations::Client),
@@ -50,7 +75,7 @@ pub fn open_main_window(
     runtime: Arc<Runtime>,
     cx: &mut App,
 ) -> (AnyWindowHandle, Entity<AppView>) {
-    let handle = open_window(window_options(), cx, move |window, cx| {
+    let handle = open_window(window_options(None), cx, move |window, cx| {
         // 同一个 entity 会被两个窗口渲染（主窗口 / 设置窗口），
         // 记下主窗口的 id，界面靠它决定画哪一套
         let main_window_id = window.window_handle().window_id();
@@ -62,16 +87,9 @@ pub fn open_main_window(
     })
     .expect("打开主窗口失败");
 
-    // 关窗到托盘：拦下关闭、只提示一次（真正隐藏窗口需要平台层 API，
-    // 这一版先做到「不会因为关窗把调度停掉」）。
-    let signal = handle.1.read(cx).close_signal.clone();
-    let _ = handle.0.update(cx, move |_view, window, cx| {
-        window.on_window_should_close(cx, move |_window, _cx| {
-            signal.store(true, std::sync::atomic::Ordering::SeqCst);
-            false
-        });
-    });
-
+    // 窗口销毁后实体还得活着（否则托盘再点就找不到界面了）
+    remember_view(&handle.1);
+    hook_close(&handle, &handle.1, cx);
     handle
 }
 
@@ -169,4 +187,82 @@ pub fn tray_only(state: AppState, runtime: Arc<Runtime>, cx: &mut App) {
         }
     })
     .detach();
+}
+
+/// 从托盘恢复：先把平台切回 windowed（重新 `attach_gpu`），再按记住的几何重建窗口。
+///
+/// 顺序不能反 —— `open_window` 要在 GPU 已经 attach 之后才拿得到渲染器。
+pub fn restore_main_window(cx: &mut Context<AppView>) {
+    let Some(entity) = main_view() else {
+        crate::ui_debug("restore_main_window: 没有实体引用（不应该发生）");
+        return;
+    };
+    cx.spawn(async move |_this, cx| {
+        switch_to_windowed(cx).await;
+        cx.update(|app| {
+            reopen_main_window(entity, app);
+        });
+    })
+    .detach();
+}
+
+/// 只需要设置页时：切回 windowed 后直接开设置窗口，不弹主界面。
+pub fn restore_settings_only(cx: &mut Context<AppView>) {
+    let Some(entity) = main_view() else {
+        crate::ui_debug("restore_settings_only: 没有实体引用（不应该发生）");
+        return;
+    };
+    cx.spawn(async move |_this, cx| {
+        switch_to_windowed(cx).await;
+        cx.update(|app| {
+            entity.update(app, |view, cx| view.open_settings(cx));
+        });
+    })
+    .detach();
+}
+
+/// 切到 windowed（已经是的话会返回 "already windowed"，忽略）。
+async fn switch_to_windowed(cx: &mut AsyncApp) {
+    let task = cx.update(|app| {
+        app.request_windowing(gpui_kit::WindowingRequest::Windowed(
+            gpui_kit::GraphicalEnvironment::detect(),
+        ))
+    });
+    match task.await {
+        Ok(()) => crate::ui_debug("switch_to_windowed: GPU 已重新 attach"),
+        Err(error) => crate::ui_debug(&format!("switch_to_windowed: {error}")),
+    }
+}
+
+/// 用已有的 `AppView` 实体重建主窗口（实体活着，只换窗口）。
+pub fn reopen_main_window(entity: Entity<AppView>, cx: &mut App) -> AnyWindowHandle {
+    let bounds = entity.read(cx).saved_bounds.clone();
+    let handle = open_window(window_options(bounds), cx, {
+        let entity = entity.clone();
+        move |window, cx| {
+            let window_id = window.window_handle().window_id();
+            entity.update(cx, |view, cx| view.attach_to_window(window_id, window, cx));
+            entity.clone()
+        }
+    })
+    .expect("重建主窗口失败");
+    crate::ui_debug("reopen_main_window: 窗口已重建");
+    remember_view(&entity);
+    hook_close(&handle, &entity, cx);
+    handle.0
+}
+
+/// 挂「用户点关闭」的拦截（重建后必须重挂，旧的钩子随窗口没了）。
+fn hook_close(
+    handle: &(AnyWindowHandle, Entity<AppView>),
+    entity: &Entity<AppView>,
+    cx: &mut App,
+) {
+    let signal = entity.read(cx).close_signal.clone();
+    let _ = handle.0.update(cx, move |_view, window, cx| {
+        window.on_window_should_close(cx, move |_window, _cx| {
+            signal.store(true, std::sync::atomic::Ordering::SeqCst);
+            false
+        });
+    });
 }

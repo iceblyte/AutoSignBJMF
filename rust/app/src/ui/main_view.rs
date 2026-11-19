@@ -77,8 +77,10 @@ pub struct AppView {
     pub settings_opening: bool,
     /// 主窗口的句柄：同一个 entity 会在两个窗口里渲染，靠它区分画哪个界面。
     pub main_window_id: Option<WindowId>,
-    /// 主窗口当前是否被藏到了托盘（主题刷新后要恢复原样）。
+    /// 主窗口当前是否在托盘里（窗口已经被销毁，等着重建）。
     pub main_hidden: bool,
+    /// 销毁窗口前记住的位置/大小（含最大化），托盘再打开时按原样重建。
+    pub saved_bounds: Option<WindowBounds>,
     /// 纬度 / 经度 / 微信 Key / QQ Key：交给组件库的 Input 管编辑与光标
     pub lat_input: Entity<InputState>,
     pub lng_input: Entity<InputState>,
@@ -435,6 +437,7 @@ impl AppView {
             settings_opening: false,
             main_window_id: Some(main_window_id),
             main_hidden: false,
+            saved_bounds: None,
             log_scroll: ScrollHandle::new(),
             log_revision_seen: None,
             tick_count: 0,
@@ -583,6 +586,15 @@ impl AppView {
         crate::ui_debug(&format!("apply_tray_command: {command:?}"));
         match command {
             TrayCommand::Open => {
+                // 窗口可能已经被销毁（隐藏即销毁）：那就走重建这条路
+                let exists = self
+                    .main_window_id
+                    .map(|id| cx.windows().into_iter().any(|h| h.window_id() == id))
+                    .unwrap_or(false);
+                if !exists {
+                    self.restore_window(cx);
+                    return;
+                }
                 // 走缓存的 HWND：隐藏状态下依然有效
                 crate::system::win::show_main_window();
                 self.main_hidden = false;
@@ -613,7 +625,17 @@ impl AppView {
                 .detach();
             }
             TrayCommand::Settings => {
-                // 只弹设置页：主窗口该藏着就继续藏着
+                // 只弹设置页：主窗口该藏着就继续藏着。
+                // 窗口已被销毁时也只要「切回 windowed 再开设置窗口」，
+                // 不必把主界面一起弹出来（render 会按 main_window_id 分流）。
+                let exists = self
+                    .main_window_id
+                    .map(|id| cx.windows().into_iter().any(|h| h.window_id() == id))
+                    .unwrap_or(false);
+                if !exists {
+                    self.restore_settings_only(cx);
+                    return;
+                }
                 self.open_settings(cx);
             }
             TrayCommand::RunNow => {
@@ -769,11 +791,21 @@ impl AppView {
             .close_signal
             .swap(false, std::sync::atomic::Ordering::SeqCst)
         {
-            if self.state.settings.minimize_to_tray {
-                // 这里没有 window 引用，用缓存的主窗口句柄（隐藏前会先枚举并记住）
-                crate::system::win::hide_main_window();
+            // 我们自己 `remove_window()` 时平台也会走一次 should_close，
+            // 把标志置起来 —— 那种情况要忽略，否则「从托盘重建窗口」会被
+            // 紧接着的一次假关闭又销毁掉（表现为点托盘窗口一闪就没）。
+            let window_alive = self
+                .main_window_id
+                .map(|id| cx.windows().into_iter().any(|handle| handle.window_id() == id))
+                .unwrap_or(false);
+            if self.main_hidden || !window_alive {
+                crate::ui_debug("close_signal: 忽略（窗口本来就不在 / 已是托盘态）");
+            } else if self.state.settings.minimize_to_tray {
+                // 系统关窗（Alt+F4 / 任务栏关闭）拿不到 Window 引用：
+                // 直接按句柄销毁全部窗口，和点 ✕ 走同一条路（几何在销毁时记下）
                 self.main_hidden = true;
-                self.state.log(LogKind::Info, "窗口已隐藏到托盘，签到继续在后台运行");
+                self.state.log(LogKind::Info, "窗口已收到托盘，签到继续在后台运行");
+                self.destroy_all_windows(cx);
                 // 关闭就是安静地收到托盘：已经有托盘图标和日志，不再弹提示窗
             } else {
                 std::process::exit(0);
@@ -823,6 +855,19 @@ impl AppView {
         self.qr_error = None;
         self.state.log(LogKind::Info, "已取消扫码");
         cx.notify();
+    }
+
+    /// 从托盘恢复主窗口：先切回 windowed（重新 attach GPU），再按记住的位置重建。
+    pub fn restore_window(&mut self, cx: &mut Context<Self>) {
+        crate::ui_debug("restore_window: 准备重建主窗口");
+        crate::boot::restore_main_window(cx);
+    }
+
+    /// 只为设置页恢复窗口（不弹主界面）。
+    pub fn restore_settings_only(&mut self, cx: &mut Context<Self>) {
+        crate::ui_debug("restore_settings_only: 只恢复设置窗口");
+        self.settings_window = None;
+        crate::boot::restore_settings_only(cx);
     }
 
     /// 打开设置窗口（独立窗口：可拖动、可最小化，不再挤在主界面里当覆盖层）。
@@ -948,7 +993,18 @@ impl AppView {
             cx.notify();
             return;
         }
-        // 只隐藏，不销毁：销毁共用同一 entity 的窗口会把整个 app 的消息循环卡死。
+        // 主窗口还在：设置窗口只是藏起来（再打开时秒开）。
+        // 主窗口已经销毁（隐藏即销毁那条路）：设置窗口就是最后一个窗口，
+        // 一并销毁并切 headless，别让 GPU 资源为它留着。
+        let main_exists = self
+            .main_window_id
+            .map(|id| cx.windows().into_iter().any(|handle| handle.window_id() == id))
+            .unwrap_or(false);
+        if !main_exists {
+            self.settings_window = None;
+            self.destroy_all_windows(cx);
+            return;
+        }
         crate::system::win::hide_window(window);
         // 两个窗口都藏起来 = 完全在后台，这时候再让内存
         if self.main_hidden {
@@ -1059,15 +1115,99 @@ impl AppView {
     /// 于是点 ✕ 之后窗口最多要等一秒才消失，看起来就是「点了没反应」。
     pub fn request_close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.state.settings.minimize_to_tray {
-            // 记住 HWND：窗口隐藏后枚举不到，托盘「打开主窗口」全靠这个句柄
-            crate::system::win::hide_main_window_of(window);
-            self.main_hidden = true;
-            self.state
-                .log(LogKind::Info, "窗口已隐藏到托盘，签到继续在后台运行");
-            cx.notify();
+            self.collapse_to_tray(window, cx);
         } else {
             std::process::exit(0);
         }
+    }
+
+    /// 收进托盘 = **销毁所有窗口**，然后切 headless 把 GPU 还回去。
+    ///
+    /// 为什么不只是 `ShowWindow(SW_HIDE)`：设备、字形图集、交换链都挂在窗口上，
+    /// 藏着不放要占 80 MB 提交。销毁后重建的代价是第一次点托盘多几百毫秒，
+    /// 换来的是常驻期间只剩调度线程 + 托盘图标（实测提交 8.6 MB）。
+    pub fn collapse_to_tray(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // 位置/大小先记住：最大化也要能还原
+        self.saved_bounds = Some(window.window_bounds());
+        self.main_hidden = true;
+        self.state
+            .log(LogKind::Info, "窗口已收到托盘，签到继续在后台运行");
+
+        // 弹窗挂在窗口上，销毁前先关掉，别留下半截状态
+        window.close_dialog(cx);
+        // 当前这个窗口必须用 `&mut Window` 直接标记：我们正处在它的 update 里，
+        // 再走 `handle.update()` 会拿不到窗口（App 已经把 Box<Window> take 走了），
+        // 表现为"点了关闭但窗口还在"。
+        window.remove_window();
+        self.destroy_all_windows(cx);
+    }
+
+    /// 销毁所有窗口，窗口数归零后切 headless。
+    ///
+    /// `request_windowing` 要求"当前没有任何窗口"，所以顺序只能是
+    /// 「先把窗口都标成 removed → 等它们真的消失 → 再切 headless」。
+    pub fn destroy_all_windows(&mut self, cx: &mut Context<Self>) {
+        let ids: Vec<WindowId> = cx.windows()
+            .into_iter()
+            .map(|handle| handle.window_id())
+            .collect();
+        for id in ids {
+            let Some(handle) = cx
+                .windows()
+                .into_iter()
+                .find(|handle| handle.window_id() == id)
+            else {
+                continue;
+            };
+            // 主窗口的位置/大小要记住（最大化也能还原），下次从托盘重建时摆回原处
+            if Some(id) == self.main_window_id {
+                if let Ok(bounds) = handle.update(cx, |_, window, _| window.window_bounds()) {
+                    self.saved_bounds = Some(bounds);
+                }
+            }
+            let _ = handle.update(cx, |_, window, _| window.remove_window());
+        }
+        self.settings_window = None;
+        crate::ui_debug("collapse: 已请求销毁全部窗口");
+
+        cx.spawn(async move |_this, cx| {
+            for _ in 0..120 {
+                cx.background_executor()
+                    .timer(std::time::Duration::from_millis(25))
+                    .await;
+                if cx.update(|app| app.windows().is_empty()) {
+                    break;
+                }
+            }
+            let switched = cx.update(|app| {
+                app.request_windowing(gpui_kit::WindowingRequest::Headless)
+            });
+            match switched.await {
+                Ok(()) => crate::ui_debug("collapse: 已切 headless（GPU 已释放）"),
+                Err(error) => crate::ui_debug(&format!("collapse: 切 headless 失败 {error}")),
+            }
+        })
+        .detach();
+    }
+
+    /// 窗口重建后重新绑定：换掉窗口 id、拿回焦点、重装边框子类。
+    pub fn attach_to_window(
+        &mut self,
+        window_id: WindowId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.main_window_id = Some(window_id);
+        self.main_hidden = false;
+        // 旧窗口拆除时平台会抛一次 should_close，别让它在重建后被当成真关闭
+        self.close_signal
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+        self.titled_windows.clear();
+        self.titlebar_dark = None;
+        window.focus(&self.root_focus, cx);
+        crate::system::win::install_frame_subclass(window);
+        self.state.log(LogKind::Info, "窗口已从托盘恢复");
+        cx.notify();
     }
 
     /// 立即签到（按钮与 Ctrl+Enter 共用）。
