@@ -232,7 +232,7 @@ fn build_tray(autostart_on: bool) -> Result<(TrayItems, tray_icon::TrayIcon), St
         .with_menu(Box::new(menu))
         // 默认是「左键弹菜单」，那样右键反而没反应；改成右键出菜单、左键直接开窗口
         .with_menu_on_left_click(false)
-        .with_tooltip("班级魔方自动签到")
+        .with_tooltip(crate::system::identity::APP_NAME)
         .with_icon(icon)
         .build()
         .map_err(|error| error.to_string())?;

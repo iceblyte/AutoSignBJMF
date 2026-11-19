@@ -76,6 +76,8 @@ pub fn open_main_window(
     cx: &mut App,
 ) -> (AnyWindowHandle, Entity<AppView>) {
     let handle = open_window(window_options(None), cx, move |window, cx| {
+        // 标题按 UTF-16 再写一遍（壳层缓存/ANSI 路径都兜住）
+        crate::system::identity::set_window_title(window, WINDOW_TITLE);
         // 同一个 entity 会被两个窗口渲染（主窗口 / 设置窗口），
         // 记下主窗口的 id，界面靠它决定画哪一套
         let main_window_id = window.window_handle().window_id();
@@ -240,6 +242,7 @@ pub fn reopen_main_window(entity: Entity<AppView>, cx: &mut App) -> AnyWindowHan
     let handle = open_window(window_options(bounds), cx, {
         let entity = entity.clone();
         move |window, cx| {
+            crate::system::identity::set_window_title(window, WINDOW_TITLE);
             let window_id = window.window_handle().window_id();
             entity.update(cx, |view, cx| view.attach_to_window(window_id, window, cx));
             entity.clone()

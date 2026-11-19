@@ -39,7 +39,10 @@ use crate::state::AppState;
 use crate::ui::AppView;
 
 /// 主窗口标题。单实例冲突时靠它找到已运行的窗口。
-pub const WINDOW_TITLE: &str = "班级魔方自动签到";
+///
+/// 统一取 `identity::APP_NAME`：任务栏、托盘、窗口标题、vbs 激活都用同一个串，
+/// 避免哪天改了一处、别处还留着旧名字。
+pub const WINDOW_TITLE: &str = system::identity::APP_NAME;
 
 fn main() {
     // 单实例：已经有窗口在跑就把它叫到前面，然后退出（不重复签到）。
@@ -77,6 +80,9 @@ fn main() {
 
     // 老版本的自启动项只有裸路径（没有 --tray），升级后顺手改写成托盘模式
     system::autostart::refresh_command();
+
+    // 应用身份：显式 AppID + 注册显示名（必须在第一个窗口创建之前）
+    system::identity::install();
 
     // 后台：调度线程 + 托盘
     let runtime = Arc::new(Runtime::start(
