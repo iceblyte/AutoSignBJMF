@@ -83,6 +83,9 @@ fn main() {
 
     // 应用身份：显式 AppID + 注册显示名（必须在第一个窗口创建之前）
     system::identity::install();
+    if let Some(warning) = system::identity::self_check() {
+        state.log(crate::state::LogKind::Warn, warning);
+    }
 
     // 后台：调度线程 + 托盘
     let runtime = Arc::new(Runtime::start(

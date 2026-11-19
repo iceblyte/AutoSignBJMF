@@ -96,6 +96,69 @@ pub fn install() {
     }
 }
 
+/// 读自己 exe 的 `FileDescription`（壳层在拿不到窗口标题时用它当名字）。
+fn self_file_description() -> Option<String> {
+    use windows_sys::Win32::Storage::FileSystem::{
+        GetFileVersionInfoSizeW, GetFileVersionInfoW, VerQueryValueW,
+    };
+    let exe = std::env::current_exe().ok()?;
+    let path: Vec<u16> = exe
+        .display()
+        .to_string()
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect();
+    unsafe {
+        let size = GetFileVersionInfoSizeW(path.as_ptr(), std::ptr::null_mut());
+        if size == 0 {
+            return None;
+        }
+        let mut buffer = vec![0u8; size as usize];
+        if GetFileVersionInfoW(path.as_ptr(), 0, size, buffer.as_mut_ptr() as *mut _) == 0 {
+            return None;
+        }
+        let sub: Vec<u16> = "\\StringFileInfo\\080404B0\\FileDescription\0"
+            .encode_utf16()
+            .collect();
+        let mut value: *mut c_void = std::ptr::null_mut();
+        let mut length = 0u32;
+        if VerQueryValueW(
+            buffer.as_ptr() as *const _,
+            sub.as_ptr(),
+            &mut value,
+            &mut length,
+        ) != 0
+            && !value.is_null()
+        {
+            // 注意：VerQueryValueW 的 length 是**字符数**，不是字节数
+            return Some(
+                std::slice::from_raw_parts(value as *const u16, length as usize)
+                    .iter()
+                    .take_while(|c| **c != 0)
+                    .map(|c| char::from_u32(*c as u32).unwrap_or('?'))
+                    .collect(),
+            );
+        }
+        None
+    }
+}
+
+/// 启动自检：当前 exe 的版本信息是不是我们这个应用的名字。
+///
+/// 这一步是为了抓「构建工具不对」：GNU 的 `windres` 不认 `.rc` 里的
+/// `#pragma code_page(65001)`，会把 UTF-8 字节当成 Unicode 写进资源，
+/// 于是任务栏 / 任务管理器里显示成「鐝骇榄旀柟鑷姩绛惧埌」这种乱码。
+/// 界面能改的只有窗口标题与 AUMID，资源里的名字只能靠换回 rc.exe 重编。
+pub fn self_check() -> Option<String> {
+    match self_file_description() {
+        Some(desc) if desc == APP_NAME => None,
+        Some(desc) => Some(format!(
+            "当前 exe 的版本信息是「{desc}」，不是「{APP_NAME}」——多半是用 windres 编的旧构建，请换 rc.exe 重新打包"
+        )),
+        None => Some("当前 exe 没有版本信息（旧构建或资源没编进去）".to_string()),
+    }
+}
+
 /// 把窗口标题按 UTF-16 显式写一遍。
 ///
 /// gpui 内部用的是 `HSTRING`（也是宽字符），这里再补一次是为了两件事：
