@@ -59,7 +59,7 @@ CI 上的做法是装 Windows SDK（`choco install windows-sdk-10.0` 或 msbuild
 | 开机自启（托盘模式，完全没有窗口） | 提交 **8.6 MB** / 工作集 25 MB —— 不初始化 D3D，第一次点托盘才建窗 |
 | 隐藏后 CPU | **0.08 s / 30 s**（约 0.3% 单核；隐藏时不再每秒重绘） |
 | 启动到窗口可见 | **486 ms**（3 次中位数） |
-| release 体积 | **10.27 MB**（`lto=true, codegen-units=1, opt-level=s, strip`） |
+| release 体积 | **13.8 MB**（v1.1.0，静态 CRT 单文件；`lto=true, codegen-units=1, opt-level=s`） |
 | release 构建耗时 | **8 分 22 秒**（全量）；关 LTO 为 3 分 48 秒 / 34.5 MB |
 | debug 构建耗时 | 首次全量约 25 秒（增量 5~10 秒） |
 | 运行时依赖 | **全部是系统 DLL**（kernel32/d3d11/dwrite/dcomp/icuuc…），无 VC++ 运行库、无 MinGW 动态库，单文件即可分发 |
@@ -410,7 +410,7 @@ cargo xwin cache xwin                     # 拉 CRT + SDK，约 2.4 GB
 
 | 指标 | MSVC 版 | GNU 版（上一轮） |
 |---|---|---|
-| release 体积 | **10.41 MB**（动态 CRT）/ **10.56 MB**（静态 CRT） | 10.7 MB |
+| release 体积 | **13.8 MB**（v1.1.0，静态 CRT 单文件） | 10.7 MB |
 | 开窗内存 | **70.9 MB** WS / 100.4 MB Private | 59.4 MB WS / 89.4 MB Private |
 | debug 全量构建 | 6 分 28 秒 | 约 25 秒（增量） |
 | release 构建（LTO） | 8 分 27 秒 | 11 分 16 秒 |
