@@ -1,10 +1,10 @@
-﻿[workspace]
+[workspace]
 resolver = "2"
 # cli 写好了 bjmf-rs，与 Python 版本对拍用；app 是 GPUI 桌面端。
 members = ["core", "cli", "app"]
 
 [workspace.package]
-version = "1.1.1"
+version = "1.1.2"
 edition = "2021"
 license = "MIT"
 repository = "https://github.com/OWNER/AutoSignBJMF"

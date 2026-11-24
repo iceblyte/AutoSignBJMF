@@ -78,8 +78,27 @@ fn main() {
         format!("程序启动，共 {} 个账号", state.config.students.len()),
     );
 
-    // 老版本的自启动项只有裸路径（没有 --tray），升级后顺手改写成托盘模式
-    system::autostart::refresh_command();
+    // 开机自启：注册表是**本机**的，设置是跟着 data 目录走的（便携版会换机器、
+    // 换盘符），所以每次启动按设置对齐一次。不这样做就会出现「界面显示已开启、
+    // 开机其实没起来」——老版本只在注册表已有值时才改写，正是这个问题。
+    match system::autostart::sync(state.settings.autostart) {
+        system::autostart::Synced::Written => state.log(
+            state::LogKind::Info,
+            "开机自启：已写入本机启动项（指向当前 exe，--tray 静默启动）",
+        ),
+        system::autostart::Synced::Removed => {
+            state.log(state::LogKind::Info, "开机自启：已从本机启动项移除")
+        }
+        system::autostart::Synced::Foreign => state.log(
+            state::LogKind::Warn,
+            "开机自启：注册表里的启动项指向另一份程序，未改动",
+        ),
+        system::autostart::Synced::Failed => state.log(
+            state::LogKind::Warn,
+            "开机自启：写注册表失败（可能被安全软件或组策略拦住）",
+        ),
+        system::autostart::Synced::UpToDate | system::autostart::Synced::Absent => {}
+    }
 
     // 应用身份：显式 AppID + 注册显示名（必须在第一个窗口创建之前）
     system::identity::install();
@@ -88,10 +107,11 @@ fn main() {
     }
 
     // 后台：调度线程 + 托盘
+    // 托盘菜单的初始文案取**注册表实际状态**，别拿 json 里的意愿冒充
     let runtime = Arc::new(Runtime::start(
         config_path,
         settings_path,
-        state.settings.autostart,
+        system::autostart::is_active(),
     ));
 
     // 开机自启（注册表里带 --tray）或显式要求：不建窗口，只跑托盘 + 调度。

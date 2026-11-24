@@ -66,7 +66,9 @@ impl Default for Settings {
             times: vec![DEFAULT_TIME.to_string()],
             retry_attempts: DEFAULT_RETRY_ATTEMPTS,
             retry_delay_minutes: DEFAULT_RETRY_DELAY_MINUTES,
-            autostart: true,
+            // 默认不开：开机自启要写本机注册表（便携版尤其不该悄悄写），
+            // 由用户在设置里明确打开。老配置里已有 true 的照旧保留。
+            autostart: false,
             minimize_to_tray: true,
             acc: DEFAULT_ACC.to_string(),
             theme: DEFAULT_THEME.to_string(),
@@ -167,7 +169,11 @@ impl Settings {
         let Ok(text) = fs::read_to_string(path) else {
             return Settings::default();
         };
-        let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) else {
+        // 记事本/部分编辑器保存会带 BOM，serde_json 不认 BOM —— 不剥掉就会被
+        // 当成「文件损坏」，整份设置悄悄回默认值。便携包里这个文件是给人看的，
+        // 被手动改一次很容易踩到。
+        let text = text.strip_prefix('\u{feff}').unwrap_or(&text);
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(text) else {
             return Settings::default();
         };
         Settings::normalize(&value)
@@ -269,7 +275,18 @@ mod tests {
         assert_eq!(loaded.retry_attempts, 3);
         assert_eq!(loaded.retry_delay_minutes, 5);
         assert!(loaded.minimize_to_tray);
-        assert!(loaded.autostart, "开机自启默认开启");
+        assert!(!loaded.autostart, "开机自启默认关闭（要写注册表，得用户主动开）");
+    }
+
+    #[test]
+    fn 带_bom_的设置文件也能读() {
+        // 记事本另存为 UTF-8 会加 BOM；以前会被当成损坏文件整份回默认值
+        let path = temp("bom.json");
+        fs::write(&path, "\u{feff}{\"autostart\": true, \"theme\": \"dark\"}").unwrap();
+        let loaded = Settings::load(&path);
+        assert!(loaded.autostart, "BOM 不该让设置整份失效");
+        assert_eq!(loaded.theme, "dark");
+        let _ = fs::remove_file(&path);
     }
 
     #[test]

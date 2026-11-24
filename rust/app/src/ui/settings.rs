@@ -214,7 +214,10 @@ fn row(title: &'static str, description: &'static str, control: AnyElement, p: &
 }
 
 fn general(view: &mut AppView, p: &Palette, cx: &mut Context<AppView>) -> AnyElement {
-    let autostart = view.state.settings.autostart;
+    // 开关按**本机注册表实际状态**显示，而不是 json 里的意愿：便携版换台机器、
+    // 换个盘符之后，json 说「开」、注册表里却没有 —— 那就是没开，不能让界面撒谎。
+    let autostart = crate::system::autostart::is_active();
+    let portable = view.state.paths.is_portable();
     let minimize = view.state.settings.minimize_to_tray;
     let theme_index = match view.state.theme {
         ThemeMode::Light => 0,
@@ -230,9 +233,19 @@ fn general(view: &mut AppView, p: &Palette, cx: &mut Context<AppView>) -> AnyEle
         .on_change(move |checked: &bool, _window, cx: &mut App| {
             let next = *checked;
             app.update(cx, |view, cx| {
-                view.state.settings.autostart = next;
+                // 先写注册表，再以「写完的真实状态」为准落盘 —— 否则设置里
+                // 「开着」而实际没写上，用户看到的是个假开关。
                 crate::system::autostart::set_enabled(next);
-                let _ = view.state.settings.save(view.state.paths.settings_file());
+                let actual = crate::system::autostart::is_active();
+                if actual == next {
+                    view.state.settings.autostart = next;
+                    let _ = view.state.settings.save(view.state.paths.settings_file());
+                } else {
+                    view.state.log(
+                        crate::state::LogKind::Warn,
+                        "开机自启写注册表失败（可能被安全软件或组策略拦住）",
+                    );
+                }
                 cx.notify();
             });
         })
@@ -275,6 +288,14 @@ fn general(view: &mut AppView, p: &Palette, cx: &mut Context<AppView>) -> AnyEle
                 .map(|label| Tab::new().label(label).flex_1()),
         );
 
+    // 便携版要说明白：数据在本目录，但开机启动只能写本机注册表（一条，免管理员）。
+    // 不说清楚，用户会以为「便携 = 什么都不写系统」。
+    let autostart_note = if portable {
+        "登录 Windows 后静默启动。便携版只在本机写一条启动项（HKCU\\...\\Run），配置仍只在 data 目录"
+    } else {
+        "登录 Windows 后静默启动，不弹窗，只在托盘运行"
+    };
+
     pane(p)
         .child(heading("启动与窗口", p))
         .child(sub("这些开关只影响本机，不随账号同步。", p))
@@ -282,7 +303,7 @@ fn general(view: &mut AppView, p: &Palette, cx: &mut Context<AppView>) -> AnyEle
             group(p)
                 .child(row(
                     "开机自动启动",
-                    "登录 Windows 后静默启动，不弹窗，只在托盘运行",
+                    autostart_note,
                     autostart_switch,
                     p,
                 ))

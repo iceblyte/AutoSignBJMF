@@ -100,6 +100,10 @@ try {
 - settings.json 界面设置（时间点、重试、开机自启等）
 - logs\         每天一个日志文件
 
+开机自启是**可选项**，默认关闭。在设置里打开后，会在本机写一条启动项
+（HKCU\Software\Microsoft\Windows\CurrentVersion\Run\AutoSignBJMF），
+不装服务、不写 Program Files；关掉开关即删除。其余配置始终只在本目录。
+
 注意：data.json 里含 Cookie 与坐标，请勿分享给他人。
 整个文件夹可以拷到 U 盘带走。
 "@

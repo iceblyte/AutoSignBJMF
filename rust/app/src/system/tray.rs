@@ -144,7 +144,7 @@ pub fn spawn(
                             // 免得设置页改了之后菜单文案还是启动时的快照
                             if last_tick.elapsed() >= std::time::Duration::from_secs(2) {
                                 last_tick = std::time::Instant::now();
-                                let autostart_on = crate::system::autostart::is_enabled();
+                                let autostart_on = crate::system::autostart::is_active();
                                 items.autostart.set_text(if autostart_on {
                                     "开机自启（已开启）"
                                 } else {

@@ -657,14 +657,29 @@ impl AppView {
                 );
             }
             TrayCommand::ToggleAutostart => {
-                let next = !crate::system::autostart::is_enabled();
+                let next = !crate::system::autostart::is_active();
                 crate::system::autostart::set_enabled(next);
+                let actual = crate::system::autostart::is_active();
+                // 意愿也要跟着落盘：否则下次启动的 sync 会按旧设置把注册表改回去
+                self.state.settings.autostart = actual;
+                let _ = self
+                    .state
+                    .settings
+                    .save(self.state.paths.settings_file());
                 self.state.log(
-                    LogKind::Info,
-                    if next {
-                        "托盘：已开启开机自启".to_string()
+                    if actual == next {
+                        LogKind::Info
                     } else {
-                        "托盘：已关闭开机自启".to_string()
+                        LogKind::Warn
+                    },
+                    if actual == next {
+                        if next {
+                            "托盘：已开启开机自启".to_string()
+                        } else {
+                            "托盘：已关闭开机自启".to_string()
+                        }
+                    } else {
+                        "托盘：开机自启写注册表失败（可能被安全软件或组策略拦住）".to_string()
                     },
                 );
             }

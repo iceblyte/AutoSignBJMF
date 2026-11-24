@@ -177,9 +177,18 @@ pub fn tray_only(state: AppState, runtime: Arc<Runtime>, cx: &mut App) {
                     crate::ui_debug(&format!("tray_only: 暂停 → {next}"));
                 }
                 TrayCommand::ToggleAutostart => {
-                    let next = !crate::system::autostart::is_enabled();
+                    let next = !crate::system::autostart::is_active();
                     crate::system::autostart::set_enabled(next);
-                    crate::ui_debug(&format!("tray_only: 开机自启 → {next}"));
+                    let actual = crate::system::autostart::is_active();
+                    // 意愿也落盘：这里还没有 AppState（窗口没建），就地读写设置文件，
+                    // 否则下次启动的 sync 会按旧设置把注册表改回去
+                    if let Some(state) = state.as_mut() {
+                        state.settings.autostart = actual;
+                        let _ = state.settings.save(state.paths.settings_file());
+                    }
+                    crate::ui_debug(&format!(
+                        "tray_only: 开机自启 → 期望 {next}，实际 {actual}"
+                    ));
                 }
                 TrayCommand::Quit => {
                     cx.update(|app| app.quit());
