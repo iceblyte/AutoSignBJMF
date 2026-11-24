@@ -21,6 +21,7 @@ login_qrcode.png
 ## Python 缓存
 __pycache__/
 *.py[cod]
+.pytest_cache/
 *$py.class
 
 ## 虚拟环境
