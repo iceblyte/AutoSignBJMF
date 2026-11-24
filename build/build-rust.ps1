@@ -64,8 +64,14 @@ try {
     $env:CARGO_TARGET_DIR = "target-static"
 
     Write-Host "== cargo build --release --target $triple ==" -ForegroundColor Cyan
-    cargo build --release -p bjmf-app --target $triple
-    if ($LASTEXITCODE -ne 0) { throw "cargo build 失败" }
+    # 注意：cargo 把进度写到 stderr，而 $ErrorActionPreference="Stop" 会把原生命令的
+    # stderr 当成异常直接中断（NativeCommandError）。这里临时放宽，只看退出码。
+    $previous = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    & cargo build --release -p bjmf-app --target $triple 2>&1 | ForEach-Object { Write-Host $_ }
+    $code = $LASTEXITCODE
+    $ErrorActionPreference = $previous
+    if ($code -ne 0) { throw "cargo build 失败（exit $code）" }
 
     $exe = Join-Path $rust "target-static\$triple\release\AutoSignBJMF.exe"
     if (-not (Test-Path $exe)) { throw "找不到产物：$exe" }

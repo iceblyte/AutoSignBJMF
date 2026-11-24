@@ -51,11 +51,14 @@ impl LogKind {
 }
 
 /// 解析一行落盘日志：`HH:MM:SS [KIND] text`。格式不对就丢掉。
-fn parse_log_line(line: &str) -> Option<LogLine> {
+///
+/// 落盘文件本身是按天切的（`app-YYYY-MM-DD.log`），所以日期由调用方给。
+fn parse_log_line(line: &str, date: &str) -> Option<LogLine> {
     let (time, rest) = line.split_once(' ')?;
     let rest = rest.strip_prefix('[')?;
     let (kind, text) = rest.split_once("] ")?;
     Some(LogLine {
+        date: date.to_string(),
         time: time.to_string(),
         kind: LogKind::from_label(kind),
         text: text.to_string(),
@@ -65,6 +68,8 @@ fn parse_log_line(line: &str) -> Option<LogLine> {
 /// 一行日志。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LogLine {
+    /// `YYYY-MM-DD`
+    pub date: String,
     /// `HH:MM:SS`
     pub time: String,
     pub text: String,
@@ -233,6 +238,8 @@ pub struct AppState {
     pub next_run_at: Option<NaiveDateTime>,
     pub last_exit: Option<i32>,
     pub logs: Vec<LogLine>,
+    /// 上一次按保留天数清理日志的日期（每天只扫一次目录）。
+    pub purged_on: Option<String>,
     /// 日志版本号：每次追加/清空都 +1。界面靠它判断「这一帧要不要把日志贴底」——
     /// 只比长度不够用（超过 600 行后会一直等长，看起来就像不滚了）。
     pub log_revision: u64,
@@ -279,6 +286,7 @@ impl AppState {
             next_run_at: None,
             last_exit: None,
             logs,
+            purged_on: None,
             log_revision: 0,
             draft,
             dirty: false,
@@ -558,10 +566,23 @@ impl AppState {
     /// 追加一行日志，最多留 600 行（原型日志面板是定高的）。
     pub fn log(&mut self, kind: LogKind, text: impl Into<String>) {
         let text = text.into();
-        let time = Local::now().format("%H:%M:%S").to_string();
+        let now = Local::now();
+        let date = now.format("%Y-%m-%d").to_string();
+        let time = now.format("%H:%M:%S").to_string();
+
+        // 跨天时顺手做一次「按保留天数清理」：一天只扫一次目录，开销可以忽略
+        if self.purged_on.as_deref() != Some(date.as_str()) {
+            self.purged_on = Some(date.clone());
+            let removed = self.purge_logs(0);
+            if removed > 0 {
+                crate::ui_debug(&format!("logs: 自动清理掉 {removed} 个过期日志文件"));
+            }
+        }
+
         self.append_to_file(&time, kind, &text);
         self.log_revision = self.log_revision.wrapping_add(1);
         self.logs.push(LogLine {
+            date,
             time,
             text,
             kind,
@@ -570,6 +591,41 @@ impl AppState {
         if overflow > 0 {
             self.logs.drain(0..overflow);
         }
+    }
+
+    /// 删除超过保留天数的日志文件（`keep_days == 0` 表示用设置里的值，
+    /// 设置也是 0 就不清理）。返回删掉的文件数。
+    pub fn purge_logs(&self, keep_days: u32) -> usize {
+        let days = if keep_days > 0 {
+            keep_days
+        } else {
+            self.settings.log_retention_days
+        };
+        if days == 0 {
+            return 0;
+        }
+        let cutoff = Local::now().date_naive() - chrono::Duration::days(i64::from(days));
+        let mut removed = 0;
+        for (date, path) in self.paths.log_files() {
+            let keep = chrono::NaiveDate::parse_from_str(&date, "%Y-%m-%d")
+                .map(|day| day >= cutoff)
+                .unwrap_or(true);
+            if !keep && std::fs::remove_file(&path).is_ok() {
+                removed += 1;
+            }
+        }
+        removed
+    }
+
+    /// 删掉 logs/ 下所有日志文件（设置页那个「删除日志」按钮）。返回删掉的文件数。
+    pub fn delete_all_logs(&self) -> usize {
+        let mut removed = 0;
+        for (_, path) in self.paths.log_files() {
+            if std::fs::remove_file(&path).is_ok() {
+                removed += 1;
+            }
+        }
+        removed
     }
 
     /// 今天的日志文件：`<数据目录>/logs/app-YYYY-MM-DD.log`。
@@ -595,20 +651,26 @@ impl AppState {
         }
     }
 
-    /// 读回今天的日志（启动时把上次运行的最后几行接上）。
+    /// 读回最近的日志（启动时把前几天的也接上，面板里按日期分隔显示）。
+    ///
+    /// 只读最近若干个文件：日志按天切，读全量历史没必要，也拖慢启动。
     fn load_recent_logs(paths: &Paths, limit: usize) -> Vec<LogLine> {
-        let path = paths
-            .log_dir()
-            .join(format!("app-{}.log", Local::now().format("%Y-%m-%d")));
-        let Ok(text) = std::fs::read_to_string(&path) else {
-            return Vec::new();
-        };
-        let mut lines: Vec<LogLine> = text
-            .lines()
-            .filter_map(parse_log_line)
-            .collect();
-        if lines.len() > limit {
-            lines.drain(0..lines.len() - limit);
+        let mut lines: Vec<LogLine> = Vec::new();
+        // log_files() 是升序；从最新往回读，凑够 limit 就停
+        for (date, path) in paths.log_files().into_iter().rev() {
+            let Ok(text) = std::fs::read_to_string(&path) else {
+                continue;
+            };
+            let mut day: Vec<LogLine> = text
+                .lines()
+                .filter_map(|line| parse_log_line(line, &date))
+                .collect();
+            day.extend(lines);
+            lines = day;
+            if lines.len() > limit {
+                lines.drain(0..lines.len() - limit);
+                break;
+            }
         }
         lines
     }

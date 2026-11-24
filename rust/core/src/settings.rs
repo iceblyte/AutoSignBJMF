@@ -28,6 +28,10 @@ pub const MAX_RETRY_DELAY_MINUTES: u32 = 60;
 pub const DEFAULT_ACC: &str = "30";
 /// 默认主题：跟随系统（与旧版本行为一致）。
 pub const DEFAULT_THEME: &str = "system";
+/// 日志默认保留天数（0 = 不清理）。一个月足够回溯，也不至于把盘塞满。
+pub const DEFAULT_LOG_RETENTION_DAYS: u32 = 30;
+/// 日志保留天数的上限（一年）。
+pub const MAX_LOG_RETENTION_DAYS: u32 = 365;
 
 /// 本机设置。字段与 `settings.json` 同名同序。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -50,6 +54,10 @@ pub struct Settings {
     /// 只影响本机外观，但必须落盘：否则每次重启都回到「跟随系统」，
     /// 用户选过的深色等于白选。
     pub theme: String,
+    /// 日志保留天数：0 = 不自动清理。默认 30。
+    ///
+    /// 只在跨天时扫一次 `logs/`，把比这个天数更早的 `app-*.log` 删掉。
+    pub log_retention_days: u32,
 }
 
 impl Default for Settings {
@@ -62,6 +70,7 @@ impl Default for Settings {
             minimize_to_tray: true,
             acc: DEFAULT_ACC.to_string(),
             theme: DEFAULT_THEME.to_string(),
+            log_retention_days: DEFAULT_LOG_RETENTION_DAYS,
         }
     }
 }
@@ -143,6 +152,12 @@ impl Settings {
                 .unwrap_or(default.minimize_to_tray),
             acc,
             theme,
+            log_retention_days: clamp_int(
+                obj.get("log_retention_days"),
+                0,
+                MAX_LOG_RETENTION_DAYS,
+                DEFAULT_LOG_RETENTION_DAYS,
+            ),
         }
     }
 
@@ -392,6 +407,23 @@ mod tests {
 
         let normalized = Settings::normalize(&json!({"autostart": "yes"}));
         assert!(normalized.autostart);
+    }
+
+    #[test]
+    fn 日志保留天数默认30_可以关掉() {
+        // 老配置没有这个字段 → 默认 30 天
+        assert_eq!(
+            Settings::normalize(&json!({})).log_retention_days,
+            DEFAULT_LOG_RETENTION_DAYS
+        );
+        // 0 = 不自动清理，是合法值，不能被当成「缺字段」回填默认
+        assert_eq!(Settings::normalize(&json!({"log_retention_days": 0})).log_retention_days, 0);
+        // 超界的夹回上限
+        assert_eq!(
+            Settings::normalize(&json!({"log_retention_days": 9999})).log_retention_days,
+            MAX_LOG_RETENTION_DAYS
+        );
+        assert_eq!(Settings::normalize(&json!({"log_retention_days": "7"})).log_retention_days, 7);
     }
 
     #[test]

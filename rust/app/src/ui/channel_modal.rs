@@ -15,7 +15,6 @@ use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::Input;
 use gpui_kit::component::{ActiveTheme as _, WindowExt as _};
 
-use crate::state::mask_key;
 use crate::ui::main_view::{channel_field_label, channel_hint, channel_name, AppView, Field};
 
 const PANEL_W: f32 = 470.0;
@@ -42,11 +41,6 @@ pub fn open(view: &mut AppView, field: Field, window: &mut Window, cx: &mut Cont
             "密钥只保存在本机 data.json 的 {} 字段里，不会上传",
             channel_field_label(field)
         );
-        let current = if empty {
-            "还没有配置密钥，填写后保存才会推送".to_string()
-        } else {
-            format!("当前：{}", mask_key(&raw))
-        };
 
         let cancel = {
             let this = this.clone();
@@ -84,8 +78,7 @@ pub fn open(view: &mut AppView, field: Field, window: &mut Window, cx: &mut Cont
                     .gap(px(8.0))
                     .child(note(hint, cx))
                     .child(Input::new(&state))
-                    .child(note(field_note, cx))
-                    .child(note(current, cx)),
+                    .child(note(field_note, cx)),
             )
             .footer(
                 div()

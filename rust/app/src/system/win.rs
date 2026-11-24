@@ -263,6 +263,12 @@ unsafe extern "system" fn visit(hwnd: *mut c_void, lparam: isize) -> i32 {
         if owner != search.pid || IsWindowVisible(hwnd) == 0 {
             return 1;
         }
+        // 设置窗口不算主窗口：它的面积可能比主窗口还大，光看尺寸会认错
+        if let Ok(guard) = settings_hwnd().lock() {
+            if *guard == Some(hwnd as isize) {
+                return 1;
+            }
+        }
         if GetWindow(hwnd, GW_OWNER) != std::ptr::null_mut() {
             return 1; // 有 owner 的是附属窗口，不是主窗口
         }
@@ -326,14 +332,14 @@ fn hide_window_with(window: &gpui_kit::Window, remember: bool, background: bool)
 }
 
 /// 把指定窗口显示出来，最小化的先还原。
+///
+/// **不写主窗口缓存**：这个函数也被设置窗口复用（托盘再点设置），
+/// 之前在这里写缓存会把"主窗口"改成设置窗口，之后「打开主窗口」就叫错人。
 pub fn show_window(window: &gpui_kit::Window) -> bool {
     leave_background();
     let Some(hwnd) = window_hwnd_of(window) else {
         return false;
     };
-    if let Ok(mut guard) = cache().lock() {
-        *guard = Some(hwnd as isize);
-    }
     unsafe {
         let command = if IsIconic(hwnd) != 0 {
             SW_RESTORE
@@ -413,6 +419,47 @@ fn cache() -> &'static std::sync::Mutex<Option<isize>> {
     static CACHE: std::sync::OnceLock<std::sync::Mutex<Option<isize>>> =
         std::sync::OnceLock::new();
     CACHE.get_or_init(|| std::sync::Mutex::new(None))
+}
+
+/// 设置窗口的 HWND。
+///
+/// 枚举主窗口要**排除**它：以前靠「面积最大的可见窗口」猜主窗口，一旦用户把
+/// 设置窗口拉得比主窗口大（或者吸附到半屏），猜出来就是设置窗口 ——
+/// 于是「关闭设置窗口」里那句 `show_main_window()` 会把刚藏起来的设置窗口
+/// 又叫出来，表现就是「设置页关不掉」；关主窗口时也可能把设置窗口收进托盘。
+fn settings_hwnd() -> &'static std::sync::Mutex<Option<isize>> {
+    static SLOT: std::sync::OnceLock<std::sync::Mutex<Option<isize>>> =
+        std::sync::OnceLock::new();
+    SLOT.get_or_init(|| std::sync::Mutex::new(None))
+}
+
+/// 把主窗口句柄记进缓存（建窗 / 重建窗口时调用）。
+///
+/// 主窗口是**我们自己的**，不该靠枚举猜：设置窗口、隐藏窗口都会干扰判断。
+pub fn remember_main_window(window: &gpui_kit::Window) {
+    let Some(hwnd) = window_hwnd_of(window) else {
+        return;
+    };
+    if let Ok(mut guard) = cache().lock() {
+        *guard = Some(hwnd as isize);
+    }
+}
+
+/// 记住设置窗口的 HWND（枚举主窗口时要跳过它）。
+pub fn remember_settings_window(window: &gpui_kit::Window) {
+    let Some(hwnd) = window_hwnd_of(window) else {
+        return;
+    };
+    if let Ok(mut guard) = settings_hwnd().lock() {
+        *guard = Some(hwnd as isize);
+    }
+}
+
+/// 设置窗口关掉后清掉记录。
+pub fn forget_settings_window() {
+    if let Ok(mut guard) = settings_hwnd().lock() {
+        *guard = None;
+    }
 }
 
 /// 找到当前进程的主窗口句柄：先看缓存，失效了再枚举可见窗口。

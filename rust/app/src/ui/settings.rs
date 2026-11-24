@@ -7,9 +7,11 @@
 
 use gpui_kit::base::StyledExt;
 use gpui_kit::prelude::*;
-use gpui_kit::{img, MouseButton, MouseMoveEvent, KeyDownEvent};
+use gpui_kit::{img, KeyDownEvent};
+use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::switch::Switch;
 use gpui_kit::component::tab::{Tab, TabBar};
+use gpui_kit::component::WindowExt as _;
 use gpui_kit::component::{Icon, IconName};
 use gpui_kit::{div, px, rgb, AnyElement, App, Context, Div, Hsla};
 
@@ -342,6 +344,38 @@ fn general(view: &mut AppView, p: &Palette, cx: &mut Context<AppView>) -> AnyEle
 fn data(view: &mut AppView, p: &Palette, cx: &mut Context<AppView>) -> AnyElement {
     let dir = view.state.data_dir().display().to_string();
     let logs = view.state.logs.len();
+    let files = view.state.paths.log_files().len();
+
+    // 日志保留天数：0 = 不自动清理。四个档位够用，不做自由输入。
+    let retention = view.state.settings.log_retention_days;
+    let options: [u32; 4] = [0, 7, 30, 90];
+    let selected = options.iter().position(|days| *days == retention).unwrap_or(2);
+    let retention_app = cx.entity();
+    let retention_seg = TabBar::new("log-retention-tabs")
+        .segmented()
+        .selected_index(selected)
+        .on_click(move |index: &usize, _, cx: &mut App| {
+            let days = options[*index];
+            retention_app.update(cx, |view, cx| {
+                view.state.settings.log_retention_days = days;
+                let _ = view.state.settings.save(view.state.paths.settings_file());
+                if days > 0 {
+                    let removed = view.state.purge_logs(days);
+                    if removed > 0 {
+                        view.state.log(
+                            crate::state::LogKind::Info,
+                            format!("已按「保留 {days} 天」清掉 {removed} 个旧日志文件"),
+                        );
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .children(
+            ["不清理", "7 天", "30 天", "90 天"]
+                .into_iter()
+                .map(|label| Tab::new().label(label).flex_1()),
+        );
 
     pane(p)
         .child(heading("数据目录", p))
@@ -375,13 +409,66 @@ fn data(view: &mut AppView, p: &Palette, cx: &mut Context<AppView>) -> AnyElemen
                     p,
                 ))
                 .child(row(
-                    "本次日志",
-                    "运行日志随进程重启清空，历史写入 logs/ 目录",
+                    "运行日志",
+                    "界面显示最近 200 行；历史按天写在 logs/ 目录",
                     div()
-                        .text_size(px(11.5))
-                        .text_color(rgb(p.text_2))
-                        .child(format!("{logs} 行"))
+                        .flex()
+                        .items_center()
+                        .gap(px(10.0))
+                        .child(
+                            div()
+                                .text_size(px(11.5))
+                                .text_color(rgb(p.text_2))
+                                .child(format!("{logs} 行 · {files} 个文件")),
+                        )
+                        .child(
+                            button("删除日志", BtnKind::Danger, BtnSize::Small, false, p)
+                                .id("delete-logs")
+                                .cursor_pointer()
+                                .on_click(click(cx, |_, _, window, cx| {
+                                    let this = cx.entity();
+                                    window.open_dialog(cx, move |dialog, _window, _cx| {
+                                        dialog
+                                            .title("删除全部日志？")
+                                            .w(px(380.0))
+                                            .centered()
+                                            .child(
+                                                div()
+                                                    .text_size(px(12.0))
+                                                    .child("logs/ 下的历史日志会被删除，无法恢复；界面上的列表也会一起清空。"),
+                                            )
+                                            .footer(
+                                                div()
+                                                    .flex()
+                                                    .items_center()
+                                                    .justify_end()
+                                                    .gap(px(8.0))
+                                                    .child(Button::new("cancel-delete-logs").label("取消").on_click(
+                                                        |_, window, cx| window.close_dialog(cx),
+                                                    ))
+                                                    .child({
+                                                        let this = this.clone();
+                                                        Button::new("confirm-delete-logs")
+                                                            .danger()
+                                                            .label("删除")
+                                                            .on_click(move |_, window, cx| {
+                                                                let _ = this.update(cx, |view, cx| {
+                                                                    view.delete_logs(cx)
+                                                                });
+                                                                window.close_dialog(cx);
+                                                            })
+                                                    }),
+                                            )
+                                    });
+                                })),
+                        )
                         .into_any_element(),
+                    p,
+                ))
+                .child(row(
+                    "自动清理",
+                    "超过保留天数的日志文件会在每天第一次写日志时删掉",
+                    retention_seg.into_any_element(),
                     p,
                 )),
         )

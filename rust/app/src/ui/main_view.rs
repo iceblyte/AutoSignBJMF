@@ -453,6 +453,8 @@ impl AppView {
         window.focus(&view.root_focus, cx);
         // 自绘标题栏 + 系统边框：交给系统处理拖动/双击/snap/拉伸
         crate::system::win::install_frame_subclass(window);
+        // 主窗口句柄记进缓存：之后 hide/show 主窗口一律认这个，不再靠枚举猜
+        crate::system::win::remember_main_window(window);
 
         // 截图/QA：弹窗必须等窗口自己的 Root 装好才能开
         // （open_dialog 依赖窗口级的组件状态，在视图构造期间调用会 panic），
@@ -802,10 +804,8 @@ impl AppView {
                 crate::ui_debug("close_signal: 忽略（窗口本来就不在 / 已是托盘态）");
             } else if self.state.settings.minimize_to_tray {
                 // 系统关窗（Alt+F4 / 任务栏关闭）拿不到 Window 引用：
-                // 直接按句柄销毁全部窗口，和点 ✕ 走同一条路（几何在销毁时记下）
-                self.main_hidden = true;
-                self.state.log(LogKind::Info, "窗口已收到托盘，签到继续在后台运行");
-                self.destroy_all_windows(cx);
+                // 按句柄收主窗口，和点 ✕ 走同一条路（只收主窗口，设置页留着）
+                self.collapse_main_by_handle(cx);
                 // 关闭就是安静地收到托盘：已经有托盘图标和日志，不再弹提示窗
             } else {
                 std::process::exit(0);
@@ -956,6 +956,8 @@ impl AppView {
                             window.focus(&focus, cx);
                             // 设置窗口也是自绘标题栏，同样交给系统
                             crate::system::win::install_frame_subclass(window);
+                            // 记下设置窗口的句柄：枚举主窗口时要跳过它
+                            crate::system::win::remember_settings_window(window);
                         });
                     }
                     crate::ui_debug("open_settings: created ok");
@@ -983,9 +985,19 @@ impl AppView {
     /// 关闭设置窗口（设置页里的「完成」与标题栏 ✕ 都走这里）。
     pub fn close_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let id = window.window_handle().window_id();
-        // 判据用「这不是主窗口」，而不是「等于记录的 settings_window」：
-        // 记录万一过期，「完成」按钮就会变成点了没反应。这里以事实为准。
-        if self.main_window_id == Some(id) {
+        let main_exists = self
+            .main_window_id
+            .map(|main| {
+                main != id && cx.windows().into_iter().any(|handle| handle.window_id() == main)
+            })
+            .unwrap_or(false);
+        crate::ui_debug(&format!(
+            "close_settings: id={:?} main={:?} settings={:?} main_exists={main_exists} hidden={}",
+            id, self.main_window_id, self.settings_window, self.main_hidden
+        ));
+        // 判据用「这不是主窗口」：记录万一过期，「完成」按钮就会变成点了没反应，
+        // 所以这里以事实为准（同一 id 必然是当前这个窗口，不算主窗口）。
+        if self.main_window_id == Some(id) && main_exists {
             self.state.log(
                 LogKind::Warn,
                 "关闭设置窗口被忽略：当前是主窗口".to_string(),
@@ -996,12 +1008,12 @@ impl AppView {
         // 主窗口还在：设置窗口只是藏起来（再打开时秒开）。
         // 主窗口已经销毁（隐藏即销毁那条路）：设置窗口就是最后一个窗口，
         // 一并销毁并切 headless，别让 GPU 资源为它留着。
-        let main_exists = self
-            .main_window_id
-            .map(|id| cx.windows().into_iter().any(|handle| handle.window_id() == id))
-            .unwrap_or(false);
         if !main_exists {
             self.settings_window = None;
+            crate::system::win::forget_settings_window();
+            // 当前这个窗口必须用 `&mut Window` 标记（见 collapse_to_tray 的注释），
+            // 否则 `handle.update()` 在它自己的 update 里拿不到窗口，会"点了没反应"
+            window.remove_window();
             self.destroy_all_windows(cx);
             return;
         }
@@ -1121,12 +1133,17 @@ impl AppView {
         }
     }
 
-    /// 收进托盘 = **销毁所有窗口**，然后切 headless 把 GPU 还回去。
+    /// 收进托盘 = **销毁主窗口**，然后把 GPU 还回去。
     ///
     /// 为什么不只是 `ShowWindow(SW_HIDE)`：设备、字形图集、交换链都挂在窗口上，
     /// 藏着不放要占 80 MB 提交。销毁后重建的代价是第一次点托盘多几百毫秒，
     /// 换来的是常驻期间只剩调度线程 + 托盘图标（实测提交 8.6 MB）。
+    ///
+    /// 注意只收**主窗口**：设置窗口要是还开着，说明用户正看着它，
+    /// 这时候把它一起关掉会显得像"程序崩了"。等设置窗口自己也关掉，
+    /// 才真的没有窗口、才切 headless。
     pub fn collapse_to_tray(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let id = window.window_handle().window_id();
         // 位置/大小先记住：最大化也要能还原
         self.saved_bounds = Some(window.window_bounds());
         self.main_hidden = true;
@@ -1139,15 +1156,53 @@ impl AppView {
         // 再走 `handle.update()` 会拿不到窗口（App 已经把 Box<Window> take 走了），
         // 表现为"点了关闭但窗口还在"。
         window.remove_window();
-        self.destroy_all_windows(cx);
+
+        let others = cx
+            .windows()
+            .into_iter()
+            .filter(|handle| handle.window_id() != id)
+            .count();
+        crate::ui_debug(&format!(
+            "collapse: 主窗口已收进托盘，其余窗口 {others} 个"
+        ));
+        if others == 0 {
+            self.go_headless_when_empty(cx);
+        }
+    }
+
+    /// 系统关窗（Alt+F4 / 任务栏关闭）走这里：没有 `&mut Window`，按句柄收主窗口。
+    pub fn collapse_main_by_handle(&mut self, cx: &mut Context<Self>) {
+        let Some(main) = self.main_window_id else {
+            self.go_headless_when_empty(cx);
+            return;
+        };
+        self.main_hidden = true;
+        self.state
+            .log(LogKind::Info, "窗口已收到托盘，签到继续在后台运行");
+        if let Some(handle) = cx
+            .windows()
+            .into_iter()
+            .find(|handle| handle.window_id() == main)
+        {
+            if let Ok(bounds) = handle.update(cx, |_, window, _| window.window_bounds()) {
+                self.saved_bounds = Some(bounds);
+            }
+            let _ = handle.update(cx, |_, window, _| window.remove_window());
+        }
+        let others = cx
+            .windows()
+            .into_iter()
+            .filter(|handle| handle.window_id() != main)
+            .count();
+        if others == 0 {
+            self.go_headless_when_empty(cx);
+        }
     }
 
     /// 销毁所有窗口，窗口数归零后切 headless。
-    ///
-    /// `request_windowing` 要求"当前没有任何窗口"，所以顺序只能是
-    /// 「先把窗口都标成 removed → 等它们真的消失 → 再切 headless」。
     pub fn destroy_all_windows(&mut self, cx: &mut Context<Self>) {
-        let ids: Vec<WindowId> = cx.windows()
+        let ids: Vec<WindowId> = cx
+            .windows()
             .into_iter()
             .map(|handle| handle.window_id())
             .collect();
@@ -1168,8 +1223,16 @@ impl AppView {
             let _ = handle.update(cx, |_, window, _| window.remove_window());
         }
         self.settings_window = None;
+        crate::system::win::forget_settings_window();
         crate::ui_debug("collapse: 已请求销毁全部窗口");
+        self.go_headless_when_empty(cx);
+    }
 
+    /// 等窗口数归零，再切 headless（顺带把 GPU 释放）。
+    ///
+    /// `request_windowing` 要求"当前没有任何窗口"，所以顺序只能是
+    /// 「先把窗口都标成 removed → 等它们真的消失 → 再切 headless」。
+    pub fn go_headless_when_empty(&mut self, cx: &mut Context<Self>) {
         cx.spawn(async move |_this, cx| {
             for _ in 0..120 {
                 cx.background_executor()
@@ -1206,6 +1269,7 @@ impl AppView {
         self.titlebar_dark = None;
         window.focus(&self.root_focus, cx);
         crate::system::win::install_frame_subclass(window);
+        crate::system::win::remember_main_window(window);
         self.state.log(LogKind::Info, "窗口已从托盘恢复");
         cx.notify();
     }
@@ -1236,15 +1300,26 @@ impl AppView {
         }
     }
 
-    /// 清空界面日志，同时把今天的日志文件清掉（否则重启又回来了）。
+    /// 清空**界面上的**日志。
+    ///
+    /// 只清内存里的列表，不碰磁盘：历史日志是回溯问题的唯一线索，
+    /// 被一个手快的点击抹掉就找不回来了。真要删，去设置 → 数据 → 删除日志。
     pub fn clear_logs(&mut self) {
         self.state.logs.clear();
         self.state.log_revision = self.state.log_revision.wrapping_add(1);
-        let path = self.state.log_file();
-        let _ = std::fs::OpenOptions::new()
-            .write(true)
-            .truncate(true)
-            .open(&path);
+    }
+
+    /// 删除磁盘上的全部日志文件，并把界面列表一起清掉（设置页那个按钮）。
+    pub fn delete_logs(&mut self, cx: &mut Context<Self>) {
+        let removed = self.state.delete_all_logs();
+        self.state.logs.clear();
+        self.state.log_revision = self.state.log_revision.wrapping_add(1);
+        // 记一条：删除动作本身也要留痕（会立刻重建今天的日志文件）
+        self.state.log(
+            LogKind::Info,
+            format!("已删除 {removed} 个历史日志文件"),
+        );
+        cx.notify();
     }
 
     /// 只写渠道开关状态（不改 Key）。
@@ -1756,17 +1831,41 @@ impl AppView {
                             }),
                     )
                     .child(
-                        div()
-                            .id("open-settings")
-                            .cursor_pointer()
-                            .text_size(px(11.5))
-                            .text_color(rgb(p.accent))
-                            .child("设置")
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.settings_tab = SettingsTab::General;
-                                this.open_settings(cx);
-                                cx.notify();
-                            })),
+                        // 设置入口做成按钮：图标 + 文字，悬停有底色反馈。
+                        // 之前只有一个强调色文字，看着像链接、也不像可点的控件。
+                        {
+                            let gear = svg()
+                                .path(IconName::Settings.path())
+                                .w(px(12.0))
+                                .h(px(12.0))
+                                .text_color(rgb(p.text_2));
+                            div()
+                                .id("open-settings")
+                                .flex_none()
+                                .flex()
+                                .items_center()
+                                .gap(px(5.0))
+                                .h(px(24.0))
+                                .px(px(8.0))
+                                .rounded(px(6.0))
+                                .cursor_pointer()
+                                .border_1()
+                                .border_color(rgb(p.line))
+                                .bg(rgb(p.surface_2))
+                                .hover(|style| style.bg(rgb(p.surface_3)))
+                                .child(gear)
+                                .child(
+                                    div()
+                                        .text_size(px(11.5))
+                                        .text_color(rgb(p.text_2))
+                                        .child("设置"),
+                                )
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.settings_tab = SettingsTab::General;
+                                    this.open_settings(cx);
+                                    cx.notify();
+                                }))
+                        },
                     ),
             )
             .into_any_element()
@@ -2023,7 +2122,9 @@ impl AppView {
                             .child(field_block("纬度", lat, p))
                             .child(field_block("经度", lng, p))
                             .child(
-                                button("拾取", BtnKind::Default, BtnSize::Small, readonly, p)
+                                // 输入框是 32px（Size::Medium → h_8），按钮也得是 32px，
+                                // 否则「拾取」比输入框矮一截、底边对不齐
+                                button("拾取", BtnKind::Default, BtnSize::Normal, readonly, p)
                                     .id("pick-location")
                                     .cursor_pointer()
                                     .child(pin)
@@ -2218,7 +2319,13 @@ impl AppView {
                     .child("暂无日志，到点执行后会显示在这里"),
             );
         }
+        // 跨天/跨文件时插一条日期分隔，避免「今天的和昨天的混在一起」
+        let mut current_date = String::new();
         for line in &self.state.logs[start..] {
+            if line.date != current_date {
+                current_date = line.date.clone();
+                lines = lines.child(log_date_separator(&current_date, p));
+            }
             let color = match line.kind {
                 LogKind::Info => p.text_2,
                 LogKind::Ok => p.ok,
@@ -2232,6 +2339,7 @@ impl AppView {
                     .gap(px(8.0))
                     .child(
                         div()
+                            .flex_none()
                             .text_size(px(11.5))
                             .text_color(rgb(p.text_3))
                             .child(line.time.clone()),
@@ -2635,6 +2743,35 @@ pub(crate) fn window_button(kind: WindowButton, p: &Palette, cx: &mut Context<Ap
 }
 
 /// 标签 + 输入框的一列。
+/// 日志面板里的日期分隔行：`2026-11-24 周一 ─────────`
+///
+/// 日志按天切文件、面板里又是连续滚动的，没有分隔的话昨天的和今天的
+/// 混在一起，看时间根本分不清是哪天。
+fn log_date_separator(date: &str, p: &Palette) -> AnyElement {
+    use chrono::Datelike as _;
+    let weekday = chrono::NaiveDate::parse_from_str(date, "%Y-%m-%d")
+        .map(|day| {
+            const NAMES: [&str; 7] = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"];
+            NAMES[day.weekday().num_days_from_monday() as usize]
+        })
+        .unwrap_or("");
+    div()
+        .flex()
+        .items_center()
+        .gap(px(8.0))
+        .pt(px(7.0))
+        .pb(px(3.0))
+        .child(
+            div()
+                .flex_none()
+                .text_size(px(10.5))
+                .text_color(rgb(p.text_3))
+                .child(format!("{date} {weekday}")),
+        )
+        .child(div().flex_1().h(px(1.0)).bg(rgb(p.line)))
+        .into_any_element()
+}
+
 fn field_block(title: impl Into<SharedString>, input: AnyElement, p: &Palette) -> AnyElement {
     div()
         .flex()
@@ -2755,14 +2892,16 @@ fn notify_block(
                 .gap(px(6.0))
                 .child(toggle)
                 .child(
+                    // 标题不占满整行：「编辑」应该紧跟在渠道名后面，
+                    // 之前标题 flex_1 把按钮顶到了最右侧
                     div()
-                        .flex_1()
-                        .min_w_0()
+                        .flex_none()
                         .text_size(px(12.0))
                         .text_color(rgb(p.text_2))
                         .child(title),
                 )
-                .child(actions),
+                .child(actions)
+                .child(div().flex_1()),
         )
         .into_any_element()
 }

@@ -81,6 +81,30 @@ impl Paths {
         self.root.join("logs")
     }
 
+    /// `logs/` 下的日志文件，按日期升序返回 `(YYYY-MM-DD, 完整路径)`。
+    ///
+    /// 只认 `app-<日期>.log` 这种命名；目录里别人放的东西一概不碰。
+    pub fn log_files(&self) -> Vec<(String, PathBuf)> {
+        let Ok(entries) = fs::read_dir(self.log_dir()) else {
+            return Vec::new();
+        };
+        let mut files: Vec<(String, PathBuf)> = entries
+            .filter_map(|entry| entry.ok())
+            .filter_map(|entry| {
+                let path = entry.path();
+                let name = path.file_name()?.to_str()?;
+                let date = name.strip_prefix("app-")?.strip_suffix(".log")?;
+                // 只接受能解析成日期的，别把 app-old.log 也当成日志
+                if chrono::NaiveDate::parse_from_str(date, "%Y-%m-%d").is_err() {
+                    return None;
+                }
+                Some((date.to_string(), path))
+            })
+            .collect();
+        files.sort_by(|a, b| a.0.cmp(&b.0));
+        files
+    }
+
     /// 确保数据目录与 `logs/` 存在。
     pub fn ensure(&self) -> io::Result<()> {
         fs::create_dir_all(self.log_dir())
