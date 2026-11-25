@@ -17,6 +17,7 @@ use gpui_kit::prelude::*;
 use gpui_kit::*;
 use gpui_kit::base::StyledExt;
 
+use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::scroll::ScrollableElement;
 use gpui_kit::assets::IconNamed;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
@@ -1261,7 +1262,13 @@ impl AppView {
                 app.request_windowing(gpui_kit::WindowingRequest::Headless)
             });
             match switched.await {
-                Ok(()) => crate::ui_debug("collapse: 已切 headless（GPU 已释放）"),
+                Ok(()) => {
+                    crate::ui_debug("collapse: 已切 headless（GPU 已释放）");
+                    // GPU 释放了，但工作集还留着刚才渲染用过的页。这里再主动裁一次，
+                    // 任务管理器里的「内存」才会真的降到托盘常驻的水平
+                    // （实测：不裁 ~50 MB，裁完 ~10 MB；提交量本来就会在几秒内掉到 17 MB）。
+                    crate::system::win::enter_background();
+                }
                 Err(error) => crate::ui_debug(&format!("collapse: 切 headless 失败 {error}")),
             }
         })
@@ -2480,22 +2487,92 @@ impl AppView {
                         .child(self.state.save_hint()),
                 )
             })
-            .child(if readonly {
-                button("删除账号", BtnKind::Danger, BtnSize::Small, false, p)
-                    .id("delete-account")
-                    .cursor_pointer()
-                    .on_click(click(cx, |this, _, _, cx| {
-                        this.delete_selected();
-                        cx.notify();
-                    }))
-                    .into_any_element()
-            } else {
-                button("保存", BtnKind::Primary, BtnSize::Small, !self.state.dirty, p)
-                    .id("save")
-                    .cursor_pointer()
-                    .on_click(click(cx, |this, _, _, cx| this.save(cx)))
-                    .into_any_element()
-            })
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(8.0))
+                    // 删除账号：以前只在「需要重新登录」时才出现，登录正常的账号反而
+                    // 找不到入口。现在只要有账号就常驻，删之前弹二次确认 —— 会连
+                    // Cookie 一起从 data.json 里删掉，撤不回来。
+                    .when(self.state.has_accounts(), |d| {
+                        d.child(
+                            button("删除账号", BtnKind::Danger, BtnSize::Small, false, p)
+                                .id("delete-account")
+                                .cursor_pointer()
+                                .on_click(click(cx, |this, _, window, cx| {
+                                    let name = this
+                                        .state
+                                        .selected_student()
+                                        .map(|student| student.name.clone())
+                                        .unwrap_or_default();
+                                    let view = cx.entity();
+                                    window.open_dialog(cx, move |dialog, _window, _cx| {
+                                        dialog
+                                            .title("删除这个账号？")
+                                            .w(px(420.0))
+                                            .centered()
+                                            .child(
+                                                div()
+                                                    .text_size(px(12.0))
+                                                    .child(format!(
+                                                        "「{name}」的登录状态（Cookie）与坐标会从 data.json 里删掉，无法撤销。"
+                                                    )),
+                                            )
+                                            .footer(
+                                                div()
+                                                    .flex()
+                                                    .items_center()
+                                                    .justify_end()
+                                                    .gap(px(8.0))
+                                                    // 弹窗里的按钮用组件库原生 Button：
+                                                    // 我们的 button() 辅助函数要 Palette，
+                                                    // 而 `p` 活不到弹窗回调（'static）里。
+                                                    .child(
+                                                        Button::new("cancel-delete-account")
+                                                            .label("取消")
+                                                            .small()
+                                                            .on_click(|_, window, cx| {
+                                                                window.close_dialog(cx)
+                                                            }),
+                                                    )
+                                                    .child({
+                                                        let view = view.clone();
+                                                        Button::new("confirm-delete-account")
+                                                            .label("删除")
+                                                            .danger()
+                                                            .small()
+                                                            .on_click(move |_, window, cx| {
+                                                                let _ = view.update(
+                                                                    cx,
+                                                                    |view, cx| {
+                                                                        view.delete_selected();
+                                                                        cx.notify();
+                                                                    },
+                                                                );
+                                                                window.close_dialog(cx);
+                                                            })
+                                                    }),
+                                            )
+                                    });
+                                })),
+                        )
+                    })
+                    .when(!readonly, |d| {
+                        d.child(
+                            button(
+                                "保存",
+                                BtnKind::Primary,
+                                BtnSize::Small,
+                                !self.state.dirty,
+                                p,
+                            )
+                            .id("save")
+                            .cursor_pointer()
+                            .on_click(click(cx, |this, _, _, cx| this.save(cx))),
+                        )
+                    }),
+            )
             .into_any_element()
     }
 
